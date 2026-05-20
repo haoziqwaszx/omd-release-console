@@ -7,82 +7,70 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <main class="wizard-shell">
-      <section class="release-hero" aria-labelledby="pageTitle">
-        <div class="release-title-block">
-          <p class="eyebrow">OMD Release Console</p>
-          <h1 id="pageTitle">安全可控的 OMD 双端发布向导</h1>
-          <p class="hero-copy">按步骤完成预检、产物确认、Manifest、线上验证和 dry-run。真实发布将在 Phase 2 启用。</p>
+    <main class="assistant-shell">
+      <section class="release-bar" aria-labelledby="pageTitle">
+        <div class="release-identity">
+          <p class="eyebrow">OMD Release</p>
+          <h1 id="pageTitle">发布助理</h1>
         </div>
-        <div class="release-status-card">
+        <div class="release-meta" aria-label="发布上下文">
+          <label class="context-field" for="versionInput">
+            <span>版本</span>
+            <input id="versionInput" value="0.0.7" placeholder="0.0.7" />
+          </label>
+          <label class="context-field release-dir-field" for="releaseDirInput">
+            <span>目录</span>
+            <input id="releaseDirInput" placeholder="默认读取最新 release 目录" />
+          </label>
+          <button id="loadButton" class="quiet-button" type="button">读取</button>
+          <button id="refreshButton" class="quiet-button" type="button">刷新</button>
+        </div>
+        <div class="release-state">
           <span class="status-label">整体状态</span>
           <strong id="overallStatusText">未开始</strong>
           <span id="overallStatusBadge" class="status-pill neutral">未开始</span>
         </div>
       </section>
 
-      <section class="release-context" aria-label="发布上下文">
-        <label class="field-group" for="versionInput">
-          <span>目标版本</span>
-          <input id="versionInput" value="0.0.7" placeholder="例如 0.0.7" />
-        </label>
-        <label class="field-group release-dir-field" for="releaseDirInput">
-          <span>Release 目录</span>
-          <input id="releaseDirInput" placeholder="默认读取桌面最新 omd-*-release-* 目录" />
-        </label>
-        <div class="context-actions">
-          <button id="loadButton" class="secondary-button" type="button">读取目录</button>
-          <button id="refreshButton" class="secondary-button" type="button">刷新</button>
-        </div>
-        <p id="releaseDirText" class="context-hint">正在读取...</p>
-      </section>
+      <p id="releaseDirText" class="release-path">正在读取...</p>
 
-      <section class="wizard-card" aria-label="发布步骤向导">
-        <nav id="stepperList" class="stepper-list" aria-label="发布步骤"></nav>
-
-        <article id="currentStepCard" class="current-step-card">
-          <div>
-            <p id="currentStepEyebrow" class="eyebrow">当前步骤</p>
-            <h2 id="currentStepTitle">准备发布信息</h2>
-            <p id="currentStepDescription" class="step-description">填写目标版本和 release 目录后开始发布准备。</p>
-          </div>
-          <div class="step-status-row">
-            <span id="currentStepStatus" class="status-pill neutral">未开始</span>
-            <button id="primaryActionButton" class="primary-button" type="button">确认发布信息</button>
-          </div>
+      <section class="assistant-stage" aria-label="发布助理">
+        <article id="currentStepCard" class="assistant-card">
+          <div id="currentStepNumber" class="step-orb">1</div>
+          <p id="currentStepEyebrow" class="eyebrow">当前步骤</p>
+          <h2 id="currentStepTitle">准备发布信息</h2>
+          <p id="currentStepDescription" class="step-description">确认目标版本和 release 目录后开始发布准备。</p>
+          <span id="currentStepStatus" class="status-pill neutral">未开始</span>
+          <button id="primaryActionButton" class="primary-button" type="button">确认发布信息</button>
           <div id="focusSuggestions" class="focus-suggestions"></div>
         </article>
 
-        <section class="step-details" aria-labelledby="detailsTitle">
-          <div class="details-heading">
-            <div>
-              <p class="eyebrow">Step Details</p>
-              <h3 id="detailsTitle">当前步骤详情</h3>
-            </div>
-            <button id="toggleLogsButton" class="ghost-button" type="button">显示日志</button>
-          </div>
-          <div id="stepDetailContent" class="detail-content"></div>
-          <pre id="actionLogOutput" class="action-log hidden">暂无动作日志</pre>
-        </section>
+        <nav id="progressRail" class="progress-rail" aria-label="发布准备进度"></nav>
       </section>
 
-      <section class="secondary-details" aria-label="辅助信息">
-        <details>
-          <summary>辅助信息：配置、Manifest、产物和命令</summary>
-          <div class="secondary-grid">
-            <section>
+      <section class="assistant-details" aria-label="检查详情">
+        <details id="detailDrawer">
+          <summary>
+            <span>查看检查详情</span>
+            <strong id="detailsSummaryText">当前步骤详情</strong>
+          </summary>
+          <div id="stepDetailContent" class="detail-content"></div>
+          <button id="toggleLogsButton" class="ghost-button" type="button">显示日志</button>
+          <pre id="actionLogOutput" class="action-log hidden">暂无动作日志</pre>
+          <div class="secondary-grid" aria-label="辅助信息">
+            <section class="secondary-section">
               <h3>配置摘要</h3>
               <div id="configSummary" class="compact-list"></div>
             </section>
-            <section>
+            <section class="secondary-section">
               <h3>Manifest 摘要</h3>
               <div id="manifestList" class="compact-list"></div>
             </section>
-            <section>
+            <section class="secondary-section">
               <h3>完整产物</h3>
               <div id="artifactList" class="compact-list"></div>
             </section>
-            <section>
+            <section class="secondary-section">
               <h3>命令</h3>
               <div id="commandOutput" class="compact-list"></div>
             </section>

@@ -1,10 +1,9 @@
-const wizardSteps = [
-  { key: 'preflight', label: '预检', action: 'preflight', description: '确认源码版本、凭据、SSH 和 updater 端点是否满足发版条件。' },
-  { key: 'artifactCheck', label: '产物检查', action: 'manifest', description: '确认 Windows 与 Mac 必需产物和签名文件是否齐全。' },
-  { key: 'manifest', label: 'Manifest', action: 'manifest', description: '生成 checksums、GitHub latest.json 和 Gitee latest.json。' },
-  { key: 'verify', label: '线上验证', action: 'verify', description: '验证 updater endpoint、manifest 版本和下载 URL。' },
-  { key: 'dryRunRelease', label: 'Dry-run', action: 'dry-run-release', description: '生成真实发布命令但不执行上传。' },
-  { key: 'publish', label: '发布', action: '', description: '真实 GitHub/Gitee 发布将在 Phase 2 启用。', disabled: true },
+const progressSteps = [
+  { key: 'preflight', label: '预检' },
+  { key: 'artifactCheck', label: '产物' },
+  { key: 'manifest', label: 'Manifest' },
+  { key: 'verify', label: '验证' },
+  { key: 'dryRunRelease', label: 'Dry-run' },
 ];
 
 const elements = {
@@ -15,13 +14,15 @@ const elements = {
   loadButton: document.querySelector('#loadButton'),
   overallStatusText: document.querySelector('#overallStatusText'),
   overallStatusBadge: document.querySelector('#overallStatusBadge'),
-  stepperList: document.querySelector('#stepperList'),
+  progressRail: document.querySelector('#progressRail'),
+  currentStepNumber: document.querySelector('#currentStepNumber'),
   currentStepEyebrow: document.querySelector('#currentStepEyebrow'),
   currentStepTitle: document.querySelector('#currentStepTitle'),
   currentStepDescription: document.querySelector('#currentStepDescription'),
   currentStepStatus: document.querySelector('#currentStepStatus'),
   primaryActionButton: document.querySelector('#primaryActionButton'),
   focusSuggestions: document.querySelector('#focusSuggestions'),
+  detailsSummaryText: document.querySelector('#detailsSummaryText'),
   stepDetailContent: document.querySelector('#stepDetailContent'),
   toggleLogsButton: document.querySelector('#toggleLogsButton'),
   actionLogOutput: document.querySelector('#actionLogOutput'),
@@ -94,16 +95,16 @@ async function loadCommands(version = '0.0.7') {
 function buildReleaseViewModel(summary, config, lastAction) {
   const state = summary?.state || {};
   const currentStep = resolveCurrentStep(state, summary);
-  const stepStatuses = mapStepStatus(state.steps || {}, currentStep.key);
-  const suggestions = topSuggestions(lastAction?.suggestions || state.suggestions || [], 3);
+  const progressItems = mapProgressItems(state.steps || {}, currentStep.key);
+  const primarySuggestion = primarySuggestionFor(currentStep, state, lastAction);
   return {
     summary,
     config,
     lastAction,
     currentStep,
     primaryAction: resolvePrimaryAction(currentStep),
-    stepStatuses,
-    suggestions,
+    primarySuggestion,
+    progressItems,
     overall: resolveOverallStatus(currentStep, state),
   };
 }
@@ -112,34 +113,69 @@ function resolveCurrentStep(state, summary) {
   const steps = state?.steps || {};
   const hasContext = Boolean(elements.versionInput.value.trim() && (elements.releaseDirInput.value.trim() || summary?.releaseDir));
   if (!hasContext) {
-    return { key: 'context', label: '准备发布信息', status: 'not_started', description: '填写目标版本和 release 目录后开始发布准备。', action: '' };
+    return { key: 'context', label: '准备发布信息', status: 'not_started', description: '确认目标版本和 release 目录后开始发布准备。', action: '' };
   }
   if (steps.preflight?.status !== 'success') {
-    return { ...wizardSteps[0], status: steps.preflight?.status || 'not_started' };
+    return {
+      key: 'preflight',
+      label: '先确认发布环境',
+      status: steps.preflight?.status || 'not_started',
+      description: '检查源码版本、凭据、4090 连接和 updater 端点。',
+      action: 'preflight',
+    };
   }
   if (steps.artifactCheck?.status !== 'success' || steps.manifestGithub?.status !== 'success' || steps.manifestGitee?.status !== 'success') {
-    return { key: 'artifactCheck', label: '产物与 Manifest', action: 'manifest', status: firstBlockingStatus([steps.artifactCheck, steps.manifestGithub, steps.manifestGitee]), description: '确认产物完整后生成 GitHub/Gitee manifest。' };
+    return {
+      key: 'artifactCheck',
+      label: '确认发布产物',
+      action: 'manifest',
+      status: firstBlockingStatus([steps.artifactCheck, steps.manifestGithub, steps.manifestGitee]),
+      description: '检查 Windows 与 Mac 产物及签名，然后生成 GitHub/Gitee manifest。',
+    };
   }
   if (steps.verify?.status !== 'success') {
-    return { ...wizardSteps[3], status: steps.verify?.status || 'not_started' };
+    return {
+      key: 'verify',
+      label: '验证线上端点',
+      status: steps.verify?.status || 'not_started',
+      description: '确认 updater manifest 与下载 URL 可访问且版本匹配。',
+      action: 'verify',
+    };
   }
   if (steps.dryRunRelease?.status !== 'success') {
-    return { ...wizardSteps[4], status: steps.dryRunRelease?.status || 'not_started' };
+    return {
+      key: 'dryRunRelease',
+      label: '生成发布命令',
+      status: steps.dryRunRelease?.status || 'not_started',
+      description: '生成真实发布前的 dry-run 命令，不执行上传。',
+      action: 'dry-run-release',
+    };
   }
-  return { key: 'complete', label: '准备完成', status: 'success', action: 'copyCommands', description: '发布准备已完成，可以复制 dry-run 输出的发布命令。' };
+  return {
+    key: 'complete',
+    label: '发布准备完成',
+    status: 'success',
+    action: 'copyCommands',
+    description: '预检、产物、manifest、验证和 dry-run 已完成。',
+  };
 }
 
 function resolvePrimaryAction(currentStep) {
   if (currentStep.key === 'context') return { label: '确认发布信息', action: 'refresh', disabled: false };
   if (currentStep.key === 'complete') return { label: '复制发布命令', action: 'copyCommands', disabled: false };
   if (!currentStep.action) return { label: 'Phase 2 启用', action: '', disabled: true };
-  const retry = currentStep.status === 'failed' ? '重新运行' : '运行';
-  return { label: `${retry}${currentStep.label}`, action: currentStep.action, disabled: false };
+  const retry = currentStep.status === 'failed' ? '重新' : '';
+  const labels = {
+    preflight: `${retry}运行预检`,
+    artifactCheck: `${retry}生成 Manifest`,
+    verify: `${retry}验证端点`,
+    dryRunRelease: `${retry}生成 dry-run`,
+  };
+  return { label: labels[currentStep.key] || currentStep.label, action: currentStep.action, disabled: false };
 }
 
-function mapStepStatus(steps, currentKey) {
-  return wizardSteps.map((step) => {
-    if (step.disabled) return { ...step, status: 'disabled', active: currentKey === step.key };
+function mapProgressItems(steps, currentKey) {
+  return progressSteps.map((step) => {
     if (step.key === 'manifest') {
       const manifestDone = steps.manifestGithub?.status === 'success' && steps.manifestGitee?.status === 'success';
       const manifestFailed = steps.manifestGithub?.status === 'failed' || steps.manifestGitee?.status === 'failed';
@@ -147,6 +183,26 @@ function mapStepStatus(steps, currentKey) {
     }
     return { ...step, status: steps[step.key]?.status || 'not_started', active: currentKey === step.key };
   });
+}
+
+function primarySuggestionFor(currentStep, state, lastAction) {
+  if (currentStep.key === 'context') {
+    if (!elements.versionInput.value.trim()) return { severity: 'warning', message: '先填写目标版本。' };
+    if (!elements.releaseDirInput.value.trim() && !appState.summary?.releaseDir) return { severity: 'warning', message: '先选择或读取 release 目录。' };
+  }
+
+  if (currentStep.key === 'complete') {
+    return { severity: 'info', message: '真实发布将在 Phase 2 启用。' };
+  }
+
+  if (currentStep.key === 'dryRunRelease') {
+    return { severity: 'info', message: 'dry-run 只生成发布命令，不会执行上传。' };
+  }
+
+  const suggestions = [...(lastAction?.suggestions || []), ...(state.suggestions || [])];
+  return suggestions.find((item) => item.severity === 'error')
+    || suggestions[0]
+    || { severity: 'info', message: '当前没有阻塞。按主按钮继续。' };
 }
 
 function resolveOverallStatus(currentStep, state) {
@@ -163,15 +219,11 @@ function firstBlockingStatus(items) {
   return 'not_started';
 }
 
-function topSuggestions(suggestions, max) {
-  return suggestions.slice(0, max);
-}
-
 function renderApp() {
   if (!elements.overallStatusText) return;
   const viewModel = buildReleaseViewModel(appState.summary, appState.config, appState.lastAction);
   renderHeader(viewModel);
-  renderStepper(viewModel.stepStatuses);
+  renderProgressRail(viewModel.progressItems);
   renderCurrentStep(viewModel);
   renderStepDetails(viewModel);
   renderSecondaryDetails(viewModel);
@@ -184,21 +236,19 @@ function renderHeader(viewModel) {
   elements.overallStatusBadge.className = `status-pill ${viewModel.overall.tone}`;
 }
 
-function renderStepper(steps) {
-  elements.stepperList.innerHTML = steps.map((step, index) => `
-    <button class="stepper-item ${step.active ? 'active' : ''}" type="button" disabled>
-      <span class="step-number">${index + 1}</span>
-      <span>
-        <strong>${step.label}</strong>
-        <small>${statusLabel(step.status)}</small>
-      </span>
-      <span class="step-dot ${toneForStatus(step.status)}"></span>
-    </button>
+function renderProgressRail(items) {
+  elements.progressRail.innerHTML = items.map((item) => `
+    <div class="progress-item ${item.active ? 'active' : ''}">
+      <span class="progress-segment ${toneForStatus(item.status)}"></span>
+      <span>${item.label}</span>
+    </div>
   `).join('');
 }
 
 function renderCurrentStep(viewModel) {
-  const { currentStep, primaryAction, suggestions } = viewModel;
+  const { currentStep, primaryAction, primarySuggestion, progressItems } = viewModel;
+  const activeIndex = Math.max(0, progressItems.findIndex((item) => item.active));
+  elements.currentStepNumber.textContent = currentStep.key === 'complete' ? '✓' : String(activeIndex + 1);
   elements.currentStepEyebrow.textContent = currentStep.key === 'complete' ? '准备完成' : '当前步骤';
   elements.currentStepTitle.textContent = currentStep.label;
   elements.currentStepDescription.textContent = currentStep.description;
@@ -207,9 +257,13 @@ function renderCurrentStep(viewModel) {
   elements.primaryActionButton.textContent = appState.loadingAction ? '执行中...' : primaryAction.label;
   elements.primaryActionButton.disabled = primaryAction.disabled || Boolean(appState.loadingAction);
   elements.primaryActionButton.dataset.action = primaryAction.action;
-  elements.focusSuggestions.innerHTML = suggestions.length
-    ? suggestions.map((item) => `<article class="focus-suggestion ${item.severity === 'error' ? 'danger' : 'warning'}"><strong>${item.severity === 'error' ? '阻塞' : '建议'}</strong><span>${item.message}</span></article>`).join('')
-    : `<p class="empty-state">当前没有阻塞建议。按主按钮继续。</p>`;
+  elements.focusSuggestions.innerHTML = `
+    <article class="focus-suggestion ${toneForSuggestion(primarySuggestion.severity)}">
+      <strong>${suggestionLabel(primarySuggestion.severity)}</strong>
+      <span>${primarySuggestion.message}</span>
+    </article>
+  `;
+  elements.detailsSummaryText.textContent = detailsSummaryFor(currentStep);
 }
 
 function renderStepDetails(viewModel) {
@@ -232,6 +286,17 @@ function renderStepDetails(viewModel) {
     return;
   }
   elements.stepDetailContent.innerHTML = `<p class="empty-state">填写发布信息后开始。</p>`;
+}
+
+function detailsSummaryFor(currentStep) {
+  return {
+    context: '发布信息与配置',
+    preflight: '预检结果与建议',
+    artifactCheck: '产物与 Manifest 详情',
+    verify: '端点验证结果',
+    dryRunRelease: '发布命令',
+    complete: '准备完成详情',
+  }[currentStep.key] || '当前步骤详情';
 }
 
 function renderChecks(checks) {
@@ -385,6 +450,22 @@ function toneForStatus(status) {
     disabled: 'neutral',
     not_started: 'neutral',
   }[status] || 'neutral';
+}
+
+function toneForSuggestion(severity) {
+  return {
+    error: 'danger',
+    warning: 'warning',
+    info: 'info',
+  }[severity] || 'info';
+}
+
+function suggestionLabel(severity) {
+  return {
+    error: '阻塞',
+    warning: '建议',
+    info: '提示',
+  }[severity] || '提示';
 }
 
 function statusLabel(status) {
