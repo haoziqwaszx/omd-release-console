@@ -5,8 +5,10 @@
   "description": "OMD 双端发布控制台：Mac 统一发布，4090 只负责 Windows 构建。",
   "type": "module",
   "scripts": {
-    "dev": "cargo run -- serve",
-    "start": "cargo run -- serve",
-    "check": "cargo fmt --check && cargo test && node --check public/app.js"
+    "dev": "cargo run -- desktop",
+    "start": "cargo run -- desktop",
+    "serve": "cargo run -- serve",
+    "build": "cargo build --release",
+    "check": "cargo fmt --check && cargo test && cargo clippy -- -D warnings && node --check public/app.js"
   }
 }

@@ -1,9 +1,12 @@
+const invoke = window.__TAURI_INTERNALS__?.invoke;
+
 const progressSteps = [
   { key: 'preflight', label: '预检' },
   { key: 'artifactCheck', label: '产物' },
   { key: 'manifest', label: 'Manifest' },
   { key: 'verify', label: '验证' },
   { key: 'dryRunRelease', label: 'Dry-run' },
+  { key: 'report', label: '报告' },
 ];
 
 const elements = {
@@ -11,6 +14,8 @@ const elements = {
   releaseDirText: document.querySelector('#releaseDirText'),
   versionInput: document.querySelector('#versionInput'),
   refreshButton: document.querySelector('#refreshButton'),
+  latestDirButton: document.querySelector('#latestDirButton'),
+  openDirButton: document.querySelector('#openDirButton'),
   loadButton: document.querySelector('#loadButton'),
   overallStatusText: document.querySelector('#overallStatusText'),
   overallStatusBadge: document.querySelector('#overallStatusBadge'),
@@ -30,12 +35,17 @@ const elements = {
   manifestList: document.querySelector('#manifestList'),
   artifactList: document.querySelector('#artifactList'),
   commandOutput: document.querySelector('#commandOutput'),
+  confirmVersionInput: document.querySelector('#confirmVersionInput'),
+  publishGithubButton: document.querySelector('#publishGithubButton'),
+  publishGiteeButton: document.querySelector('#publishGiteeButton'),
+  historyList: document.querySelector('#historyList'),
 };
 
 const appState = {
   summary: null,
   config: null,
   commands: [],
+  history: [],
   lastAction: null,
   loadingAction: '',
 };
@@ -43,10 +53,16 @@ const appState = {
 await loadConfig();
 await loadSummary();
 await loadCommands();
+await loadHistory();
 
 if (elements.refreshButton) elements.refreshButton.addEventListener('click', () => loadSummary(elements.releaseDirInput.value.trim()));
 if (elements.loadButton) elements.loadButton.addEventListener('click', () => loadSummary(elements.releaseDirInput.value.trim()));
+if (elements.latestDirButton) elements.latestDirButton.addEventListener('click', () => loadLatestReleaseDir());
+if (elements.openDirButton) elements.openDirButton.addEventListener('click', () => openReleaseDir());
+if (!invoke) document.querySelectorAll('.desktop-only').forEach((element) => element.hidden = true);
 if (elements.primaryActionButton) elements.primaryActionButton.addEventListener('click', () => runPrimaryAction());
+if (elements.publishGithubButton) elements.publishGithubButton.addEventListener('click', () => runAction('publish-github'));
+if (elements.publishGiteeButton) elements.publishGiteeButton.addEventListener('click', () => runAction('publish-gitee'));
 if (elements.versionInput) elements.versionInput.addEventListener('change', () => loadCommands(elements.versionInput.value.trim()));
 if (elements.toggleLogsButton) {
   elements.toggleLogsButton.addEventListener('click', () => {
@@ -72,8 +88,9 @@ if (elements.stepDetailContent) {
 }
 
 async function loadSummary(releaseDir = '') {
-  const query = releaseDir ? `?releaseDir=${encodeURIComponent(releaseDir)}` : '';
-  appState.summary = await fetchJson(`/api/summary${query}`);
+  appState.summary = invoke
+    ? await invoke('tauri_summary', { releaseDir: releaseDir || null })
+    : await fetchJson(releaseDir ? `/api/summary?releaseDir=${encodeURIComponent(releaseDir)}` : '/api/summary');
   if (appState.summary.releaseDir && !elements.releaseDirInput.value) {
     elements.releaseDirInput.value = appState.summary.releaseDir;
   }
@@ -81,14 +98,39 @@ async function loadSummary(releaseDir = '') {
 }
 
 async function loadConfig() {
-  const data = await fetchJson('/api/config');
+  const data = invoke ? await invoke('tauri_config') : await fetchJson('/api/config');
   appState.config = data.config;
   renderApp();
 }
 
 async function loadCommands(version = '0.0.7') {
-  const data = await fetchJson(`/api/commands?version=${encodeURIComponent(version || '0.0.7')}`);
+  const data = invoke
+    ? await invoke('tauri_commands', { version: version || '0.0.7' })
+    : await fetchJson(`/api/commands?version=${encodeURIComponent(version || '0.0.7')}`);
   appState.commands = data.commands;
+  renderApp();
+}
+
+async function loadHistory() {
+  const data = invoke ? await invoke('tauri_history') : await fetchJson('/api/history');
+  appState.history = data.runs || [];
+  renderApp();
+}
+
+async function loadLatestReleaseDir() {
+  if (!invoke) return;
+  const data = await invoke('tauri_latest_release_dir');
+  if (data.releaseDir) {
+    elements.releaseDirInput.value = data.releaseDir;
+    await loadSummary(data.releaseDir);
+  }
+}
+
+async function openReleaseDir() {
+  if (!invoke) return;
+  const releaseDir = elements.releaseDirInput.value.trim() || appState.summary?.releaseDir || '';
+  const data = await invoke('tauri_open_release_dir', { releaseDir });
+  appState.lastAction = data;
   renderApp();
 }
 
@@ -124,13 +166,22 @@ function resolveCurrentStep(state, summary) {
       action: 'preflight',
     };
   }
-  if (steps.artifactCheck?.status !== 'success' || steps.manifestGithub?.status !== 'success' || steps.manifestGitee?.status !== 'success') {
+  if (steps.artifactCheck?.status !== 'success') {
     return {
       key: 'artifactCheck',
       label: '确认发布产物',
+      action: 'check-artifacts',
+      status: steps.artifactCheck?.status || 'not_started',
+      description: '检查 Windows 与 Mac 产物及签名。',
+    };
+  }
+  if (steps.manifestGithub?.status !== 'success' || steps.manifestGitee?.status !== 'success') {
+    return {
+      key: 'manifest',
+      label: '生成 Manifest',
       action: 'manifest',
-      status: firstBlockingStatus([steps.artifactCheck, steps.manifestGithub, steps.manifestGitee]),
-      description: '检查 Windows 与 Mac 产物及签名，然后生成 GitHub/Gitee manifest。',
+      status: firstBlockingStatus([steps.manifestGithub, steps.manifestGitee]),
+      description: '生成 checksums 和 GitHub/Gitee manifest。',
     };
   }
   if (steps.verify?.status !== 'success') {
@@ -151,6 +202,15 @@ function resolveCurrentStep(state, summary) {
       action: 'dry-run-release',
     };
   }
+  if (steps.report?.status !== 'success') {
+    return {
+      key: 'report',
+      label: '生成发布报告',
+      status: steps.report?.status || 'not_started',
+      description: '沉淀本次发布的步骤、状态、产物和 manifest 摘要。',
+      action: 'report',
+    };
+  }
   return {
     key: 'complete',
     label: '发布准备完成',
@@ -167,9 +227,11 @@ function resolvePrimaryAction(currentStep) {
   const retry = currentStep.status === 'failed' ? '重新' : '';
   const labels = {
     preflight: `${retry}运行预检`,
-    artifactCheck: `${retry}生成 Manifest`,
+    artifactCheck: `${retry}检查产物`,
+    manifest: `${retry}生成 Manifest`,
     verify: `${retry}验证端点`,
     dryRunRelease: `${retry}生成 dry-run`,
+    report: `${retry}生成报告`,
   };
   return { label: labels[currentStep.key] || currentStep.label, action: currentStep.action, disabled: false };
 }
@@ -192,7 +254,11 @@ function primarySuggestionFor(currentStep, state, lastAction) {
   }
 
   if (currentStep.key === 'complete') {
-    return { severity: 'info', message: '真实发布将在 Phase 2 启用。' };
+    return { severity: 'info', message: '发布准备、dry-run 和报告已完成；真实发布仍需版本确认。' };
+  }
+
+  if (Object.values(appState.summary?.manifests || {}).some((manifest) => manifest.versionStatus === 'same_version')) {
+    return { severity: 'warning', message: '线上 manifest 已是目标版本，重复发布前请确认。' };
   }
 
   if (currentStep.key === 'dryRunRelease') {
@@ -207,6 +273,7 @@ function primarySuggestionFor(currentStep, state, lastAction) {
 
 function resolveOverallStatus(currentStep, state) {
   if (currentStep.status === 'failed' || state?.overallStatus === 'failed') return { label: '有阻塞', tone: 'danger' };
+  if (currentStep.status === 'manual_required' || state?.overallStatus === 'manual_required') return { label: '需人工处理', tone: 'warning' };
   if (currentStep.key === 'complete') return { label: '已完成', tone: 'success' };
   if (currentStep.status === 'running') return { label: '正在执行', tone: 'warning' };
   if (currentStep.key === 'context') return { label: '未开始', tone: 'neutral' };
@@ -227,6 +294,7 @@ function renderApp() {
   renderCurrentStep(viewModel);
   renderStepDetails(viewModel);
   renderSecondaryDetails(viewModel);
+  renderHistory();
 }
 
 function renderHeader(viewModel) {
@@ -316,6 +384,7 @@ function renderArtifacts(requiredArtifacts, actualArtifacts) {
   const rows = requiredArtifacts.length
     ? [...requiredArtifacts, ...actualArtifacts.filter((artifact) => !requiredKeys.has(`${artifact.scope}/${artifact.name}`))]
     : actualArtifacts;
+  rows.sort((a, b) => Number(b.exists === false) - Number(a.exists === false));
   elements.stepDetailContent.innerHTML = rows.length ? rows.map((artifact) => `
     <article class="detail-row">
       <span class="status-dot ${artifact.exists === false ? 'danger' : 'success'}"></span>
@@ -362,10 +431,27 @@ function renderConfig(config) {
 }
 
 function renderManifestSummary(manifests) {
-  elements.manifestList.innerHTML = ['github', 'gitee'].map((host) => {
+  const baseRows = ['github', 'gitee'].map((host) => {
     const manifest = manifests[host] || {};
-    return `<article class="compact-row"><span>${hostLabel(host)}</span><strong>${manifest.exists ? manifest.version : '缺失'}</strong></article>`;
-  }).join('');
+    const status = manifest.versionStatus === 'same_version' ? ' · 已是目标版本' : '';
+    return `<article class="compact-row"><span>${hostLabel(host)}</span><strong>${manifest.exists ? `${manifest.version}${status}` : '缺失'}</strong></article>`;
+  });
+  const diff = appState.summary?.manifestDiff || {};
+  const warnings = [
+    ...(diff.missingOnGithub || []).map((item) => `GitHub 缺 ${item}`),
+    ...(diff.missingOnGitee || []).map((item) => `Gitee 缺 ${item}`),
+  ];
+  elements.manifestList.innerHTML = [
+    ...baseRows,
+    ...warnings.map((warning) => `<article class="compact-row"><span>差异</span><strong>${escapeHtml(warning)}</strong></article>`),
+  ].join('');
+}
+
+function renderHistory() {
+  if (!elements.historyList) return;
+  elements.historyList.innerHTML = appState.history.length
+    ? appState.history.map((run) => `<article class="compact-row"><span>${escapeHtml(run.version || '-')}</span><strong>${escapeHtml(run.overallStatus || '-')}</strong></article>`).join('')
+    : `<p class="empty-state">暂无发布历史</p>`;
 }
 
 function renderFullArtifacts(requiredArtifacts, actualArtifacts) {
@@ -396,15 +482,19 @@ async function runAction(action) {
     appState.loadingAction = action;
     renderApp();
 
-    const data = await fetchAction(`/api/actions/${action}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ version, releaseDir }),
-    });
+    const confirmVersion = elements.confirmVersionInput?.value.trim() || '';
+    const data = invoke
+      ? await invoke('tauri_action', { action, version, releaseDir, confirmVersion })
+      : await fetchAction(`/api/actions/${action}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ version, releaseDir, confirmVersion }),
+      });
 
     appState.lastAction = data;
     elements.actionLogOutput.textContent = [data.logs?.stdout, data.logs?.stderr].filter(Boolean).join('\n') || data.message;
     await loadSummary(releaseDir);
+    await loadHistory();
   } catch (error) {
     appState.lastAction = { ok: false, suggestions: [{ severity: 'error', message: error.message, action }] };
     elements.actionLogOutput.textContent = error.message;

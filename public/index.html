@@ -24,6 +24,8 @@
           </label>
           <button id="loadButton" class="quiet-button" type="button">读取</button>
           <button id="refreshButton" class="quiet-button" type="button">刷新</button>
+          <button id="latestDirButton" class="quiet-button desktop-only" type="button">最近目录</button>
+          <button id="openDirButton" class="quiet-button desktop-only" type="button">打开目录</button>
         </div>
         <div class="release-state">
           <span class="status-label">整体状态</span>
@@ -74,8 +76,19 @@
               <h3>命令</h3>
               <div id="commandOutput" class="compact-list"></div>
             </section>
+            <section class="secondary-section">
+              <h3>发布确认</h3>
+              <input id="confirmVersionInput" placeholder="输入版本号后生成发布命令" />
+              <button id="publishGithubButton" class="secondary-button" type="button">GitHub 命令</button>
+              <button id="publishGiteeButton" class="secondary-button" type="button">Gitee 命令</button>
+            </section>
           </div>
         </details>
+      </section>
+
+      <section class="assistant-details" aria-label="发布历史">
+        <h2 class="section-title">发布历史</h2>
+        <div id="historyList" class="compact-list"></div>
       </section>
     </main>
     <script type="module" src="/app.js"></script>

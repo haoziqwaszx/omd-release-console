@@ -9,8 +9,9 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tauri::State;
 
-const STEP_KEYS: [&str; 9] = [
+const STEP_KEYS: [&str; 10] = [
     "preflight",
     "artifactCheck",
     "checksums",
@@ -20,6 +21,7 @@ const STEP_KEYS: [&str; 9] = [
     "verify",
     "publishGithub",
     "publishGitee",
+    "report",
 ];
 
 #[derive(Clone, Debug, Deserialize)]
@@ -87,15 +89,18 @@ fn main() {
 fn run_main() -> Result<(), String> {
     let app = AppContext::load()?;
     let args: Vec<String> = env::args().skip(1).collect();
-    let command = args.first().map(String::as_str).unwrap_or("serve");
+    let command = args.first().map(String::as_str).unwrap_or("desktop");
 
     match command {
+        "desktop" | "app" | "gui" => run_desktop(app),
         "serve" | "server" | "dev" => serve(app),
         "plan" => {
             print_plan();
             Ok(())
         }
-        "preflight" | "manifest" | "verify" | "release" => run_cli_command(app, &args),
+        "preflight" | "check-artifacts" | "manifest" | "verify" | "report" | "release" => {
+            run_cli_command(app, &args)
+        }
         "--help" | "-h" | "help" => {
             print_help();
             Ok(())
@@ -117,6 +122,99 @@ impl AppContext {
             config,
         })
     }
+}
+
+fn run_desktop(app: AppContext) -> Result<(), String> {
+    tauri::Builder::default()
+        .manage(app)
+        .invoke_handler(tauri::generate_handler![
+            tauri_config,
+            tauri_summary,
+            tauri_commands,
+            tauri_action,
+            tauri_latest_release_dir,
+            tauri_open_release_dir,
+            tauri_history
+        ])
+        .run(tauri::generate_context!())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn tauri_config(app: State<'_, AppContext>) -> Value {
+    json!({ "ok": true, "config": config_summary(&app.config) })
+}
+
+#[tauri::command]
+fn tauri_summary(app: State<'_, AppContext>, release_dir: Option<String>) -> Result<Value, String> {
+    let release_dir = release_dir
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| expand_home(value.trim()))
+        .or_else(|| find_latest_release_dir(&app.desktop_dir));
+    summarize_release(&app, release_dir.as_deref())
+}
+
+#[tauri::command]
+fn tauri_commands(version: Option<String>) -> Value {
+    let version = version
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("0.0.7");
+    release_commands(version)
+}
+
+#[tauri::command]
+fn tauri_action(
+    app: State<'_, AppContext>,
+    action: String,
+    version: String,
+    release_dir: String,
+    confirm_version: Option<String>,
+) -> Result<Value, String> {
+    let body = json!({
+        "version": version,
+        "releaseDir": release_dir,
+        "confirmVersion": confirm_version.unwrap_or_default()
+    });
+    run_action(&app, &action, &body)
+}
+
+#[tauri::command]
+fn tauri_latest_release_dir(app: State<'_, AppContext>) -> Value {
+    json!({
+        "ok": true,
+        "releaseDir": find_latest_release_dir(&app.desktop_dir).map(|path| path.to_string_lossy().to_string())
+    })
+}
+
+#[tauri::command]
+fn tauri_open_release_dir(
+    app: State<'_, AppContext>,
+    release_dir: String,
+) -> Result<Value, String> {
+    let release_dir = absolute_path(&expand_home(release_dir.trim()));
+    if !release_dir.exists() || !release_dir.is_dir() {
+        return Ok(action_error(
+            "open-release-dir",
+            "invalid_input",
+            "releaseDir 不存在。",
+        ));
+    }
+    if release_dir.strip_prefix(&app.desktop_dir).is_err() {
+        return Ok(action_error(
+            "open-release-dir",
+            "invalid_input",
+            "只能打开桌面下的 release 目录。",
+        ));
+    }
+    run_status("open", &[release_dir.to_string_lossy().as_ref()], None)?;
+    Ok(json!({ "ok": true, "releaseDir": release_dir.to_string_lossy() }))
+}
+
+#[tauri::command]
+fn tauri_history(app: State<'_, AppContext>) -> Value {
+    load_release_history(&app.root)
 }
 
 fn load_release_config(root: &Path) -> Result<ReleaseConfig, String> {
@@ -213,11 +311,13 @@ fn run_cli_command(app: AppContext, args: &[String]) -> Result<(), String> {
 
     match command {
         "preflight" => preflight(&ctx),
+        "check-artifacts" => check_artifacts(&ctx),
         "manifest" => {
             checksums(&ctx)?;
             manifests(&ctx)
         }
         "verify" => verify(&ctx),
+        "report" => report(&ctx),
         "release" => release(&ctx),
         _ => Err(format!("未知命令：{command}")),
     }
@@ -258,12 +358,14 @@ impl StateManager {
                 "updatedAt": now,
                 "currentStep": "",
                 "overallStatus": "not_started",
+                "runId": format!("{}-{}", self.version, timestamp()),
                 "checks": [],
                 "steps": {},
                 "artifacts": [],
                 "manifests": {},
                 "errors": [],
-                "suggestions": []
+                "suggestions": [],
+                "history": []
             })
         };
 
@@ -273,11 +375,15 @@ impl StateManager {
             .unwrap_or(&self.release_dir.to_string_lossy()));
         state["sourceRepo"] = json!(state["sourceRepo"].as_str().unwrap_or(&self.source_repo));
         state["commit"] = json!(state["commit"].as_str().unwrap_or(&self.commit));
+        if state["runId"].as_str().unwrap_or("").is_empty() {
+            state["runId"] = json!(format!("{}-{}", self.version, timestamp()));
+        }
         ensure_array(&mut state, "checks");
         ensure_array(&mut state, "artifacts");
         ensure_object(&mut state, "manifests");
         ensure_array(&mut state, "errors");
         ensure_array(&mut state, "suggestions");
+        ensure_array(&mut state, "history");
         ensure_object(&mut state, "steps");
 
         for key in STEP_KEYS {
@@ -301,6 +407,7 @@ impl StateManager {
         let now = iso_now();
         state["currentStep"] = json!(step_key);
         state["overallStatus"] = json!("running");
+        push_history(&mut state, "step_started", step_key, message);
         let mut step = state["steps"][step_key].clone();
         step["status"] = json!("running");
         step["startedAt"] = json!(now);
@@ -321,6 +428,7 @@ impl StateManager {
             .to_string();
         state["currentStep"] = json!(step_key);
         state["overallStatus"] = json!("success");
+        push_history(&mut state, "step_completed", step_key, message);
         let mut step = state["steps"][step_key].clone();
         step["status"] = json!("success");
         step["endedAt"] = json!(now.clone());
@@ -341,6 +449,7 @@ impl StateManager {
             .to_string();
         state["currentStep"] = json!(step_key);
         state["overallStatus"] = json!("failed");
+        push_history(&mut state, "step_failed", step_key, message);
         push_array(
             &mut state["errors"],
             json!({ "step": step_key, "message": message, "at": now }),
@@ -408,7 +517,8 @@ impl StateManager {
             .unwrap_or("")
             .to_string();
         state["currentStep"] = json!(step_key);
-        state["overallStatus"] = json!("failed");
+        state["overallStatus"] = json!("manual_required");
+        push_history(&mut state, "step_manual_required", step_key, message);
         upsert_suggestion(&mut state, suggestion, "warning", step_key);
         let mut step = state["steps"][step_key].clone();
         step["status"] = json!("manual_required");
@@ -679,6 +789,14 @@ fn release(ctx: &CliContext) -> Result<(), String> {
         return publish_step(ctx, step);
     }
 
+    if let Some(resume_from) = ctx
+        .flags
+        .get("resumeFrom")
+        .and_then(|value| value.as_deref())
+    {
+        return run_safe_release_sequence(ctx, resume_from);
+    }
+
     preflight(ctx)?;
     fs::create_dir_all(&ctx.release_dir).map_err(|error| error.to_string())?;
     progress(&format!("发布目录：{}", ctx.release_dir.display()));
@@ -704,6 +822,51 @@ fn release(ctx: &CliContext) -> Result<(), String> {
         "请先使用 --dry-run 核对命令；真实发布将在后续阶段启用",
     )?;
     Err("当前版本为安全第一版：请先使用 --dry-run 核对命令，再逐步接入真实执行。".to_string())
+}
+
+fn run_safe_release_sequence(ctx: &CliContext, resume_from: &str) -> Result<(), String> {
+    let mut active = false;
+    for step in release_step_order() {
+        if step == resume_from {
+            active = true;
+        }
+        if !active {
+            continue;
+        }
+        match step {
+            "preflight" => preflight(ctx)?,
+            "check-artifacts" => check_artifacts(ctx)?,
+            "manifest" => manifests(ctx)?,
+            "verify" => verify(ctx)?,
+            "dry-run-release" => {
+                ctx.state
+                    .start_step("dryRunRelease", "生成 dry-run 发布命令")?;
+                let commands = dry_run_commands(ctx)?;
+                ctx.state.complete_step(
+                    "dryRunRelease",
+                    "dry-run 发布命令已生成",
+                    json!({ "commands": commands }),
+                )?;
+            }
+            "report" => report(ctx)?,
+            _ => return Err(format!("未知恢复步骤：{step}")),
+        }
+    }
+    if !active {
+        return Err(format!("未知恢复起点：{resume_from}"));
+    }
+    Ok(())
+}
+
+fn release_step_order() -> Vec<&'static str> {
+    vec![
+        "preflight",
+        "check-artifacts",
+        "manifest",
+        "verify",
+        "dry-run-release",
+        "report",
+    ]
 }
 
 fn publish_step(ctx: &CliContext, step: &str) -> Result<(), String> {
@@ -786,7 +949,7 @@ fn publish_commands(ctx: &CliContext, step_key: &str) -> Vec<String> {
     }
 }
 
-fn checksums(ctx: &CliContext) -> Result<(), String> {
+fn check_artifacts(ctx: &CliContext) -> Result<(), String> {
     fs::create_dir_all(&ctx.release_dir).map_err(|error| error.to_string())?;
     ctx.state.start_step("artifactCheck", "检查发布产物")?;
     let artifacts = inspect_artifacts(ctx)?;
@@ -800,18 +963,94 @@ fn checksums(ctx: &CliContext) -> Result<(), String> {
         .count();
     if missing > 0 {
         let message = format!("缺少 {missing} 个必需产物或签名");
-        ctx.state.fail_step(
-            "artifactCheck",
-            &message,
-            "请补齐缺失产物后重新生成 manifest",
-        )?;
+        for artifact in artifacts.iter().filter(|artifact| {
+            artifact["required"].as_bool().unwrap_or(false)
+                && !artifact["exists"].as_bool().unwrap_or(false)
+        }) {
+            ctx.state.record_suggestion(
+                &missing_artifact_message(artifact),
+                "error",
+                "check-artifacts",
+            )?;
+        }
+        ctx.state
+            .fail_step("artifactCheck", &message, "请补齐缺失产物后重新检查产物")?;
         return Err(message);
     }
     ctx.state.complete_step(
         "artifactCheck",
         "产物完整",
         json!({ "count": artifacts.len() }),
-    )?;
+    )
+}
+
+fn missing_artifact_message(artifact: &Value) -> String {
+    format!(
+        "缺少 {}/{}，请回到对应构建机补齐产物或签名。",
+        artifact["scope"].as_str().unwrap_or("unknown"),
+        artifact["name"].as_str().unwrap_or("unknown")
+    )
+}
+
+fn report(ctx: &CliContext) -> Result<(), String> {
+    ctx.state.start_step("report", "生成发布报告")?;
+    let state = ctx.state.load_state();
+    let body = release_report_markdown(&state);
+    let file = ctx.release_dir.join("release-report.md");
+    fs::write(&file, body).map_err(|error| error.to_string())?;
+    ctx.state.complete_step(
+        "report",
+        "发布报告已生成",
+        json!({ "file": file.to_string_lossy() }),
+    )
+}
+
+fn release_report_markdown(state: &Value) -> String {
+    let version = state["version"].as_str().unwrap_or("unknown");
+    let commit = state["commit"].as_str().unwrap_or("");
+    let mut body = format!("# OMD {version} Release Report\n\nCommit: `{commit}`\n\n## Steps\n\n");
+    if let Some(steps) = state["steps"].as_object() {
+        for (key, step) in steps {
+            body.push_str(&format!(
+                "- `{}`: {} — {}\n",
+                key,
+                step["status"].as_str().unwrap_or("not_started"),
+                step["message"].as_str().unwrap_or("")
+            ));
+        }
+    }
+    body
+}
+
+fn release_history_file(root: &Path) -> PathBuf {
+    root.join("release-history.json")
+}
+
+fn load_release_history(root: &Path) -> Value {
+    read_json_if_exists(&release_history_file(root)).unwrap_or_else(|| json!({ "runs": [] }))
+}
+
+fn record_release_history(app: &AppContext, state: &Value) -> Result<(), String> {
+    let mut history = load_release_history(&app.root);
+    ensure_array(&mut history, "runs");
+    upsert_by_key(
+        &mut history["runs"],
+        json!({
+            "key": state["runId"].as_str().unwrap_or(""),
+            "runId": state["runId"].as_str().unwrap_or(""),
+            "version": state["version"].as_str().unwrap_or(""),
+            "releaseDir": state["releaseDir"].as_str().unwrap_or(""),
+            "overallStatus": state["overallStatus"].as_str().unwrap_or("not_started"),
+            "updatedAt": state["updatedAt"].as_str().unwrap_or("")
+        }),
+    );
+    let body = serde_json::to_string_pretty(&history).map_err(|error| error.to_string())?;
+    fs::write(release_history_file(&app.root), format!("{body}\n"))
+        .map_err(|error| error.to_string())
+}
+
+fn checksums(ctx: &CliContext) -> Result<(), String> {
+    check_artifacts(ctx)?;
 
     ctx.state.start_step("checksums", "生成 checksums.sha256")?;
     let files: Vec<PathBuf> = list_files(&ctx.release_dir)?
@@ -1115,6 +1354,10 @@ fn handle_connection(app: &AppContext, stream: &mut TcpStream) -> Result<(), Str
         );
     }
 
+    if path == "/api/history" {
+        return send_json(stream, 200, &load_release_history(&app.root));
+    }
+
     if path.starts_with("/api/actions/") {
         if method != "POST" {
             return send_json(
@@ -1152,75 +1395,129 @@ fn run_action(app: &AppContext, action: &str, body: &Value) -> Result<Value, Str
         }
     }
 
-    let command_args = match action {
-        "preflight" => vec![
-            "preflight".to_string(),
-            version.clone(),
-            "--release-dir".to_string(),
-            release_dir.to_string_lossy().to_string(),
-        ],
-        "manifest" => vec![
-            "manifest".to_string(),
-            version.clone(),
-            "--release-dir".to_string(),
-            release_dir.to_string_lossy().to_string(),
-        ],
-        "verify" => vec![
-            "verify".to_string(),
-            version.clone(),
-            "--release-dir".to_string(),
-            release_dir.to_string_lossy().to_string(),
-        ],
-        "dry-run-release" => vec![
-            "release".to_string(),
-            version.clone(),
-            "--release-dir".to_string(),
-            release_dir.to_string_lossy().to_string(),
-            "--dry-run".to_string(),
-        ],
-        "publish-github" => vec![
-            "release".to_string(),
-            version.clone(),
-            "--release-dir".to_string(),
-            release_dir.to_string_lossy().to_string(),
-            "--step".to_string(),
-            "publish-github".to_string(),
-            "--confirm-version".to_string(),
-            version.clone(),
-        ],
-        "publish-gitee" => vec![
-            "release".to_string(),
-            version.clone(),
-            "--release-dir".to_string(),
-            release_dir.to_string_lossy().to_string(),
-            "--step".to_string(),
-            "publish-gitee".to_string(),
-            "--confirm-version".to_string(),
-            version.clone(),
-        ],
-        _ => {
-            return Ok(action_error(
-                action,
-                "unknown_action",
-                &format!("未知 action：{action}"),
-            ))
-        }
+    let command_args = match action_command_args(action, &version, &release_dir) {
+        Ok(args) => args,
+        Err(error) => return Ok(error),
     };
     let binary = env::current_exe().map_err(|error| error.to_string())?;
     let output = run_binary(&binary, &command_args, &app.root)?;
     let state = read_json_if_exists(&release_dir.join("state.json"));
+    if let Some(state_value) = state.as_ref() {
+        let _ = record_release_history(app, state_value);
+    }
     let manual_required =
         output.stderr.contains("真实上传仍需人工执行") || output.stdout.contains("[需人工确认]");
     let ok = output.status == 0;
-    Ok(json!({
-        "ok": ok,
+    let status = if ok {
+        "success"
+    } else if manual_required {
+        "manual_required"
+    } else {
+        "failed"
+    };
+    Ok(action_success(
+        action,
+        status,
+        if ok {
+            format!("{action} 完成")
+        } else if manual_required {
+            format!("{action} 需要人工执行")
+        } else {
+            format!("{action} 失败")
+        },
+        state,
+        output,
+    ))
+}
+
+fn action_success(
+    action: &str,
+    status: &str,
+    message: String,
+    state: Option<Value>,
+    output: CommandOutput,
+) -> Value {
+    json!({
+        "ok": status == "success" || status == "manual_required",
         "action": action,
-        "status": if ok { "success" } else if manual_required { "manual_required" } else { "failed" },
-        "message": if ok { format!("{action} 完成") } else if manual_required { format!("{action} 需要人工执行") } else { format!("{action} 失败") },
+        "status": status,
+        "message": message,
         "state": state,
         "logs": { "stdout": output.stdout, "stderr": output.stderr },
         "suggestions": state.as_ref().and_then(|item| item["suggestions"].as_array()).cloned().unwrap_or_default()
-    }))
+    })
+}
+
+fn action_command_args(
+    action: &str,
+    version: &str,
+    release_dir: &Path,
+) -> Result<Vec<String>, Value> {
+    let release_dir = release_dir.to_string_lossy().to_string();
+    match action {
+        "preflight" => Ok(vec![
+            "preflight".to_string(),
+            version.to_string(),
+            "--release-dir".to_string(),
+            release_dir,
+        ]),
+        "check-artifacts" => Ok(vec![
+            "check-artifacts".to_string(),
+            version.to_string(),
+            "--release-dir".to_string(),
+            release_dir,
+        ]),
+        "manifest" => Ok(vec![
+            "manifest".to_string(),
+            version.to_string(),
+            "--release-dir".to_string(),
+            release_dir,
+        ]),
+        "verify" => Ok(vec![
+            "verify".to_string(),
+            version.to_string(),
+            "--release-dir".to_string(),
+            release_dir,
+        ]),
+        "dry-run-release" => Ok(vec![
+            "release".to_string(),
+            version.to_string(),
+            "--release-dir".to_string(),
+            release_dir,
+            "--dry-run".to_string(),
+        ]),
+        "report" => Ok(vec![
+            "report".to_string(),
+            version.to_string(),
+            "--release-dir".to_string(),
+            release_dir,
+        ]),
+        "publish-github" => Ok(vec![
+            "release".to_string(),
+            version.to_string(),
+            "--release-dir".to_string(),
+            release_dir,
+            "--step".to_string(),
+            "publish-github".to_string(),
+            "--confirm-version".to_string(),
+            version.to_string(),
+        ]),
+        "publish-gitee" => Ok(vec![
+            "release".to_string(),
+            version.to_string(),
+            "--release-dir".to_string(),
+            release_dir,
+            "--step".to_string(),
+            "publish-gitee".to_string(),
+            "--confirm-version".to_string(),
+            version.to_string(),
+        ]),
+        _ => Err(action_error(
+            action,
+            "unknown_action",
+            &format!("未知 action：{action}"),
+        )),
+    }
 }
 
 fn validate_action_input(app: &AppContext, body: &Value) -> Result<(String, PathBuf), String> {
@@ -1285,9 +1582,10 @@ fn summarize_release(app: &AppContext, release_dir: Option<&Path>) -> Result<Val
         "ok": true,
         "releaseDir": normalized,
         "manifests": {
-            "github": manifest_summary(github_manifest.as_ref()),
-            "gitee": manifest_summary(gitee_manifest.as_ref())
+            "github": manifest_summary_with_target(github_manifest.as_ref(), &version),
+            "gitee": manifest_summary_with_target(gitee_manifest.as_ref(), &version)
         },
+        "manifestDiff": manifest_platform_diff(github_manifest.as_ref(), gitee_manifest.as_ref()),
         "artifacts": artifacts,
         "requiredArtifacts": required_artifacts,
         "checksums": checksums.into_iter().take(80).collect::<Vec<_>>(),
@@ -1407,6 +1705,38 @@ fn manifest_summary(manifest: Option<&Value>) -> Value {
         "notes": manifest["notes"].as_str().unwrap_or(""),
         "pubDate": manifest["pub_date"].as_str().unwrap_or(""),
         "platforms": platforms
+    })
+}
+
+fn manifest_summary_with_target(manifest: Option<&Value>, target_version: &str) -> Value {
+    let mut summary = manifest_summary(manifest);
+    summary["versionStatus"] = json!(manifest_version_status(
+        target_version,
+        manifest.and_then(|value| value["version"].as_str())
+    ));
+    summary
+}
+
+fn manifest_version_status(target: &str, current: Option<&str>) -> &'static str {
+    match current {
+        Some(value) if value == target => "same_version",
+        Some(_) => "different_version",
+        None => "missing",
+    }
+}
+
+fn manifest_platform_diff(github: Option<&Value>, gitee: Option<&Value>) -> Value {
+    let github_keys: Vec<String> = github
+        .and_then(|value| value["platforms"].as_object())
+        .map(|items| items.keys().cloned().collect())
+        .unwrap_or_default();
+    let gitee_keys: Vec<String> = gitee
+        .and_then(|value| value["platforms"].as_object())
+        .map(|items| items.keys().cloned().collect())
+        .unwrap_or_default();
+    json!({
+        "missingOnGithub": gitee_keys.iter().filter(|key| !github_keys.contains(key)).cloned().collect::<Vec<_>>(),
+        "missingOnGitee": github_keys.iter().filter(|key| !gitee_keys.contains(key)).cloned().collect::<Vec<_>>()
     })
 }
 
@@ -1880,6 +2210,19 @@ fn upsert_suggestion(state: &mut Value, message: &str, severity: &str, action: &
     }
 }
 
+fn push_history(state: &mut Value, event: &str, step_key: &str, message: &str) {
+    ensure_array(state, "history");
+    push_array(
+        &mut state["history"],
+        json!({
+            "event": event,
+            "step": step_key,
+            "message": message,
+            "at": iso_now()
+        }),
+    );
+}
+
 fn with_default_time(mut value: Value, key: &str) -> Value {
     if value[key].is_null() {
         value[key] = json!(iso_now());
@@ -2058,5 +2401,167 @@ mod tests {
             duration_ms("2026-05-20T00:00:00Z", "2026-05-20T00:00:02Z"),
             2000
         );
+    }
+
+    #[test]
+    fn default_state_contains_release_run_fields() {
+        let temp = std::env::temp_dir().join(format!("omd-state-test-{}", timestamp()));
+        let state = StateManager::new(
+            temp.clone(),
+            "0.0.7".to_string(),
+            "/tmp/source".to_string(),
+            "abc123".to_string(),
+        )
+        .unwrap();
+
+        let value = state.load_state();
+
+        assert_eq!(value["version"], "0.0.7");
+        assert_eq!(value["overallStatus"], "not_started");
+        assert!(value["runId"].as_str().unwrap().starts_with("0.0.7-"));
+        assert!(value["checks"].as_array().is_some());
+        assert!(value["steps"]
+            .as_object()
+            .unwrap()
+            .contains_key("preflight"));
+        assert!(value["history"].as_array().is_some());
+
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn manual_required_is_not_overall_failed() {
+        let temp = std::env::temp_dir().join(format!("omd-manual-test-{}", timestamp()));
+        let state = StateManager::new(
+            temp.clone(),
+            "0.0.7".to_string(),
+            "/tmp/source".to_string(),
+            "abc123".to_string(),
+        )
+        .unwrap();
+
+        state.start_step("publishGithub", "准备发布").unwrap();
+        state
+            .manual_required_step(
+                "publishGithub",
+                "需要人工确认",
+                json!({ "commands": ["gh release create v0.0.7"] }),
+                "核对后手动执行",
+            )
+            .unwrap();
+
+        let value = read_json(&temp.join("state.json")).unwrap();
+        assert_eq!(value["overallStatus"], "manual_required");
+        assert_eq!(value["steps"]["publishGithub"]["status"], "manual_required");
+
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn step_transitions_append_history_events() {
+        let temp = std::env::temp_dir().join(format!("omd-history-test-{}", timestamp()));
+        let state = StateManager::new(
+            temp.clone(),
+            "0.0.7".to_string(),
+            "/tmp/source".to_string(),
+            "abc123".to_string(),
+        )
+        .unwrap();
+
+        state.start_step("preflight", "开始预检").unwrap();
+        state
+            .complete_step("preflight", "预检通过", json!({ "passed": 3 }))
+            .unwrap();
+
+        let value = read_json(&temp.join("state.json")).unwrap();
+        let history = value["history"].as_array().unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0]["event"], "step_started");
+        assert_eq!(history[1]["event"], "step_completed");
+
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn action_name_maps_check_artifacts_to_artifact_command() {
+        let args = action_command_args(
+            "check-artifacts",
+            "0.0.7",
+            Path::new("/tmp/omd-0.0.7-release-x"),
+        )
+        .unwrap();
+        assert_eq!(args[0], "check-artifacts");
+        assert!(args.contains(&"--release-dir".to_string()));
+    }
+
+    #[test]
+    fn action_error_has_consistent_shape() {
+        let value = action_error("preflight", "invalid_input", "bad input");
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["action"], "preflight");
+        assert_eq!(value["status"], "invalid_input");
+        assert!(value["logs"].is_object());
+        assert_eq!(value["suggestions"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn release_report_includes_version_commit_and_steps() {
+        let state = json!({
+            "version": "0.0.7",
+            "commit": "abc123",
+            "overallStatus": "success",
+            "steps": { "preflight": { "status": "success", "message": "ok" } },
+            "artifacts": [],
+            "manifests": {}
+        });
+        let report = release_report_markdown(&state);
+        assert!(report.contains("# OMD 0.0.7 Release Report"));
+        assert!(report.contains("abc123"));
+        assert!(report.contains("preflight"));
+    }
+
+    #[test]
+    fn release_history_file_lives_in_project_root() {
+        let root = Path::new("/tmp/omd-release-console");
+        assert_eq!(
+            release_history_file(root),
+            root.join("release-history.json")
+        );
+    }
+
+    #[test]
+    fn parse_resume_from_flag_to_camel_case() {
+        let flags = parse_flags(&["--resume-from".to_string(), "verify".to_string()]);
+        assert_eq!(
+            flags.get("resumeFrom").and_then(|value| value.as_deref()),
+            Some("verify")
+        );
+    }
+
+    #[test]
+    fn manifest_version_status_detects_same_version() {
+        assert_eq!(
+            manifest_version_status("0.0.7", Some("0.0.7")),
+            "same_version"
+        );
+        assert_eq!(
+            manifest_version_status("0.0.7", Some("0.0.6")),
+            "different_version"
+        );
+        assert_eq!(manifest_version_status("0.0.7", None), "missing");
+    }
+
+    #[test]
+    fn missing_artifact_message_names_file() {
+        let artifact = json!({ "scope": "windows", "name": "OMD_0.0.7_x64-setup.exe", "exists": false, "required": true });
+        assert!(missing_artifact_message(&artifact).contains("OMD_0.0.7_x64-setup.exe"));
+    }
+
+    #[test]
+    fn manifest_platforms_report_missing_between_hosts() {
+        let github = json!({ "platforms": { "darwin-aarch64": {}, "windows-x86_64": {} } });
+        let gitee = json!({ "platforms": { "darwin-aarch64": {} } });
+        let diff = manifest_platform_diff(Some(&github), Some(&gitee));
+        assert_eq!(diff["missingOnGitee"][0], "windows-x86_64");
     }
 }
