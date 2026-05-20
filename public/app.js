@@ -446,6 +446,7 @@ function toneForStatus(status) {
   return {
     success: 'success',
     running: 'warning',
+    manual_required: 'warning',
     failed: 'danger',
     disabled: 'neutral',
     not_started: 'neutral',
