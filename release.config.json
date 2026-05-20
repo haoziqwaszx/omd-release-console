@@ -1,0 +1,39 @@
+{
+  "sourceRepo": "/Users/glame/Desktop/dix-extension-ui",
+  "githubRepo": "haoziqwaszx/omd-distribution",
+  "giteeOwner": "glame",
+  "giteeRepo": "omd-distribution",
+  "giteeLatest": "https://gitee.com/glame/omd-distribution/raw/master/latest.json",
+  "githubLatest": "https://github.com/haoziqwaszx/omd-distribution/releases/latest/download/latest.json",
+  "windowsSsh": "4090@192.168.101.9",
+  "windowsRepo": "C:\\Users\\4090\\Desktop\\dix-extension-ui",
+  "windowsTarget": "x86_64-pc-windows-msvc",
+  "githubProxy": "http://127.0.0.1:7890",
+  "releaseDirPattern": "~/Desktop/omd-*-release-*",
+  "requiredArtifacts": [
+    {
+      "key": "windows-x86_64-nsis",
+      "scope": "windows",
+      "file": "OMD_{version}_x64-setup.exe",
+      "signature": "OMD_{version}_x64-setup.exe.sig"
+    },
+    {
+      "key": "windows-x86_64-msi",
+      "scope": "windows",
+      "file": "OMD_{version}_x64_en-US.msi",
+      "signature": "OMD_{version}_x64_en-US.msi.sig"
+    },
+    {
+      "key": "windows-x86_64-green",
+      "scope": "windows",
+      "file": "OMD_{version}_x64_green.zip",
+      "signature": "OMD_{version}_x64_green.zip.sig"
+    },
+    {
+      "key": "darwin-aarch64",
+      "scope": "mac",
+      "file": "OMD.app.tar.gz",
+      "signature": "OMD.app.tar.gz.sig"
+    }
+  ]
+}
