@@ -7,159 +7,87 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <main class="app-shell">
-      <aside class="sidebar">
-        <div>
-          <p class="eyebrow">OMD Release</p>
-          <h1>发布控制台</h1>
+    <main class="wizard-shell">
+      <section class="release-hero" aria-labelledby="pageTitle">
+        <div class="release-title-block">
+          <p class="eyebrow">OMD Release Console</p>
+          <h1 id="pageTitle">安全可控的 OMD 双端发布向导</h1>
+          <p class="hero-copy">按步骤完成预检、产物确认、Manifest、线上验证和 dry-run。真实发布将在 Phase 2 启用。</p>
         </div>
-        <nav class="nav-list">
-          <a href="#overview">概览</a>
-          <a href="#actions">准备动作</a>
-          <a href="#manifests">Manifest</a>
-          <a href="#artifacts">产物</a>
-          <a href="#commands">命令</a>
-        </nav>
-      </aside>
+        <div class="release-status-card">
+          <span class="status-label">整体状态</span>
+          <strong id="overallStatusText">未开始</strong>
+          <span id="overallStatusBadge" class="status-pill neutral">未开始</span>
+        </div>
+      </section>
 
-      <section class="content">
-        <header class="topbar">
+      <section class="release-context" aria-label="发布上下文">
+        <label class="field-group" for="versionInput">
+          <span>目标版本</span>
+          <input id="versionInput" value="0.0.7" placeholder="例如 0.0.7" />
+        </label>
+        <label class="field-group release-dir-field" for="releaseDirInput">
+          <span>Release 目录</span>
+          <input id="releaseDirInput" placeholder="默认读取桌面最新 omd-*-release-* 目录" />
+        </label>
+        <div class="context-actions">
+          <button id="loadButton" class="secondary-button" type="button">读取目录</button>
+          <button id="refreshButton" class="secondary-button" type="button">刷新</button>
+        </div>
+        <p id="releaseDirText" class="context-hint">正在读取...</p>
+      </section>
+
+      <section class="wizard-card" aria-label="发布步骤向导">
+        <nav id="stepperList" class="stepper-list" aria-label="发布步骤"></nav>
+
+        <article id="currentStepCard" class="current-step-card">
           <div>
-            <p class="eyebrow">Mac 统一发布 · 4090 专注构建</p>
-            <h2>双端版本发布</h2>
+            <p id="currentStepEyebrow" class="eyebrow">当前步骤</p>
+            <h2 id="currentStepTitle">准备发布信息</h2>
+            <p id="currentStepDescription" class="step-description">填写目标版本和 release 目录后开始发布准备。</p>
           </div>
-          <button id="refreshButton" type="button">刷新状态</button>
-        </header>
+          <div class="step-status-row">
+            <span id="currentStepStatus" class="status-pill neutral">未开始</span>
+            <button id="primaryActionButton" class="primary-button" type="button">确认发布信息</button>
+          </div>
+          <div id="focusSuggestions" class="focus-suggestions"></div>
+        </article>
 
-        <section id="overview" class="panel">
-          <div class="panel-heading">
+        <section class="step-details" aria-labelledby="detailsTitle">
+          <div class="details-heading">
             <div>
-              <p class="eyebrow">Release Directory</p>
-              <h3>发布目录</h3>
+              <p class="eyebrow">Step Details</p>
+              <h3 id="detailsTitle">当前步骤详情</h3>
             </div>
+            <button id="toggleLogsButton" class="ghost-button" type="button">显示日志</button>
           </div>
-          <div class="release-input version-row">
-            <input id="versionInput" value="0.0.7" placeholder="目标版本，例如 0.0.7" />
-            <button id="commandButton" type="button">生成命令</button>
-          </div>
-          <div class="release-input">
-            <input id="releaseDirInput" placeholder="默认读取桌面最新 omd-*-release-* 目录" />
-            <button id="loadButton" type="button">读取</button>
-          </div>
-          <p id="releaseDirText" class="muted">正在读取...</p>
-          <div class="metric-grid">
-            <div class="metric">
-              <span>GitHub Manifest</span>
-              <strong id="githubVersion">-</strong>
-            </div>
-            <div class="metric">
-              <span>Gitee Manifest</span>
-              <strong id="giteeVersion">-</strong>
-            </div>
-            <div class="metric">
-              <span>产物数量</span>
-              <strong id="artifactCount">-</strong>
-            </div>
-            <div class="metric">
-              <span>状态节点</span>
-              <strong id="checkpointCount">-</strong>
-            </div>
-          </div>
+          <div id="stepDetailContent" class="detail-content"></div>
+          <pre id="actionLogOutput" class="action-log hidden">暂无动作日志</pre>
         </section>
+      </section>
 
-        <section class="panel">
-          <div class="panel-heading">
-            <div>
-              <p class="eyebrow">Config</p>
-              <h3>发布配置摘要</h3>
-            </div>
+      <section class="secondary-details" aria-label="辅助信息">
+        <details>
+          <summary>辅助信息：配置、Manifest、产物和命令</summary>
+          <div class="secondary-grid">
+            <section>
+              <h3>配置摘要</h3>
+              <div id="configSummary" class="compact-list"></div>
+            </section>
+            <section>
+              <h3>Manifest 摘要</h3>
+              <div id="manifestList" class="compact-list"></div>
+            </section>
+            <section>
+              <h3>完整产物</h3>
+              <div id="artifactList" class="compact-list"></div>
+            </section>
+            <section>
+              <h3>命令</h3>
+              <div id="commandOutput" class="compact-list"></div>
+            </section>
           </div>
-          <div id="configSummary" class="config-grid"></div>
-        </section>
-
-        <section id="actions" class="panel">
-          <div class="panel-heading">
-            <div>
-              <p class="eyebrow">Actions</p>
-              <h3>发布准备动作</h3>
-            </div>
-          </div>
-          <div id="actionList" class="action-grid"></div>
-        </section>
-
-        <section class="two-column">
-          <div class="panel">
-            <div class="panel-heading">
-              <div>
-                <p class="eyebrow">Suggestions</p>
-                <h3>下一步建议</h3>
-              </div>
-            </div>
-            <div id="suggestionList" class="suggestion-list"></div>
-          </div>
-
-          <div class="panel">
-            <div class="panel-heading">
-              <div>
-                <p class="eyebrow">Logs</p>
-                <h3>最近动作日志</h3>
-              </div>
-            </div>
-            <pre id="actionLogOutput">暂无动作日志</pre>
-          </div>
-        </section>
-
-        <section id="flow" class="panel">
-          <div class="panel-heading">
-            <div>
-              <p class="eyebrow">Workflow</p>
-              <h3>发布流程</h3>
-            </div>
-          </div>
-          <ol id="flowList" class="flow-list"></ol>
-        </section>
-
-        <section class="two-column">
-          <div id="manifests" class="panel">
-            <div class="panel-heading">
-              <div>
-                <p class="eyebrow">Manifest</p>
-                <h3>平台目标</h3>
-              </div>
-            </div>
-            <div id="manifestList" class="target-list"></div>
-          </div>
-
-          <div class="panel">
-            <div class="panel-heading">
-              <div>
-                <p class="eyebrow">State</p>
-                <h3>最近进度</h3>
-              </div>
-            </div>
-            <div id="checkpointList" class="checkpoint-list"></div>
-          </div>
-        </section>
-
-        <section id="artifacts" class="panel">
-          <div class="panel-heading">
-            <div>
-              <p class="eyebrow">Artifacts</p>
-              <h3>发布产物</h3>
-            </div>
-          </div>
-          <div id="artifactList" class="artifact-list"></div>
-        </section>
-
-        <section id="commands" class="panel">
-          <div class="panel-heading">
-            <div>
-              <p class="eyebrow">Commands</p>
-              <h3>下一版命令</h3>
-            </div>
-          </div>
-          <div id="commandOutput" class="command-card-list"></div>
-        </section>
+        </details>
       </section>
     </main>
     <script type="module" src="/app.js"></script>
