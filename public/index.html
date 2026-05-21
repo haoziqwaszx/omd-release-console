@@ -7,88 +7,114 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <main class="assistant-shell">
-      <section class="release-bar" aria-labelledby="pageTitle">
-        <div class="release-identity">
+    <main class="release-app-shell">
+      <header class="app-toolbar" aria-label="发布上下文">
+        <div class="traffic-lights" aria-hidden="true">
+          <span></span>
+          <span></span>
+          <span></span>
+        </div>
+        <div class="toolbar-title">
           <p class="eyebrow">OMD Release</p>
-          <h1 id="pageTitle">发布助理</h1>
+          <h1 id="pageTitle">发布控制台</h1>
         </div>
-        <div class="release-meta" aria-label="发布上下文">
-          <label class="context-field" for="versionInput">
-            <span>版本</span>
-            <input id="versionInput" value="0.0.7" placeholder="0.0.7" />
-          </label>
-          <label class="context-field release-dir-field" for="releaseDirInput">
-            <span>目录</span>
-            <input id="releaseDirInput" placeholder="默认读取最新 release 目录" />
-          </label>
-          <button id="loadButton" class="quiet-button" type="button">读取</button>
-          <button id="refreshButton" class="quiet-button" type="button">刷新</button>
-          <button id="latestDirButton" class="quiet-button desktop-only" type="button">最近目录</button>
-          <button id="openDirButton" class="quiet-button desktop-only" type="button">打开目录</button>
-        </div>
-        <div class="release-state">
-          <span class="status-label">整体状态</span>
-          <strong id="overallStatusText">未开始</strong>
-          <span id="overallStatusBadge" class="status-pill neutral">未开始</span>
-        </div>
-      </section>
-
-      <p id="releaseDirText" class="release-path">正在读取...</p>
-
-      <section class="assistant-stage" aria-label="发布助理">
-        <article id="currentStepCard" class="assistant-card">
-          <div id="currentStepNumber" class="step-orb">1</div>
-          <p id="currentStepEyebrow" class="eyebrow">当前步骤</p>
-          <h2 id="currentStepTitle">准备发布信息</h2>
-          <p id="currentStepDescription" class="step-description">确认目标版本和 release 目录后开始发布准备。</p>
-          <span id="currentStepStatus" class="status-pill neutral">未开始</span>
-          <button id="primaryActionButton" class="primary-button" type="button">确认发布信息</button>
-          <div id="focusSuggestions" class="focus-suggestions"></div>
-        </article>
-
-        <nav id="progressRail" class="progress-rail" aria-label="发布准备进度"></nav>
-      </section>
-
-      <section class="assistant-details" aria-label="检查详情">
-        <details id="detailDrawer">
-          <summary>
-            <span>查看检查详情</span>
-            <strong id="detailsSummaryText">当前步骤详情</strong>
-          </summary>
-          <div id="stepDetailContent" class="detail-content"></div>
-          <button id="toggleLogsButton" class="ghost-button" type="button">显示日志</button>
-          <pre id="actionLogOutput" class="action-log hidden">暂无动作日志</pre>
-          <div class="secondary-grid" aria-label="辅助信息">
-            <section class="secondary-section">
-              <h3>配置摘要</h3>
-              <div id="configSummary" class="compact-list"></div>
-            </section>
-            <section class="secondary-section">
-              <h3>Manifest 摘要</h3>
-              <div id="manifestList" class="compact-list"></div>
-            </section>
-            <section class="secondary-section">
-              <h3>完整产物</h3>
-              <div id="artifactList" class="compact-list"></div>
-            </section>
-            <section class="secondary-section">
-              <h3>命令</h3>
-              <div id="commandOutput" class="compact-list"></div>
-            </section>
-            <section class="secondary-section">
-              <h3>发布确认</h3>
-              <input id="confirmVersionInput" placeholder="输入版本号后生成发布命令" />
-              <button id="publishGithubButton" class="secondary-button" type="button">GitHub 命令</button>
-              <button id="publishGiteeButton" class="secondary-button" type="button">Gitee 命令</button>
-            </section>
+        <div class="toolbar-actions">
+          <button id="historyButton" class="ghost-button" type="button">历史</button>
+          <button id="diagnosticsButton" class="ghost-button" type="button">高级</button>
+          <div class="toolbar-status">
+            <span class="status-label">整体状态</span>
+            <strong id="overallStatusText">未开始</strong>
+            <span id="overallStatusBadge" class="status-pill neutral">未开始</span>
           </div>
-        </details>
+        </div>
+      </header>
+
+      <section class="release-context-panel" aria-label="发布信息">
+        <label class="context-field" for="versionInput">
+          <span>目标版本</span>
+          <input id="versionInput" value="0.0.7" placeholder="0.0.7" />
+        </label>
+        <label class="context-field release-dir-field" for="releaseDirInput">
+          <span>Release 目录</span>
+          <input id="releaseDirInput" placeholder="默认读取最新 release 目录" />
+        </label>
+        <button id="loadButton" class="tertiary-button" type="button">读取</button>
+        <button id="refreshButton" class="tertiary-button" type="button">刷新</button>
+        <button id="latestDirButton" class="tertiary-button desktop-only" type="button">最近目录</button>
+        <button id="openDirButton" class="tertiary-button desktop-only" type="button">打开目录</button>
+        <p id="releaseDirText" class="release-path">正在读取...</p>
       </section>
 
-      <section class="assistant-details" aria-label="发布历史">
-        <h2 class="section-title">发布历史</h2>
-        <div id="historyList" class="compact-list"></div>
+      <section class="release-workspace" aria-label="发布向导">
+        <aside class="release-sidebar" aria-label="发布旅程">
+          <div class="sidebar-heading">
+            <span class="eyebrow">发布旅程</span>
+            <strong>从打包到发布</strong>
+          </div>
+          <nav id="progressRail" class="journey-list" aria-label="发布进度"></nav>
+        </aside>
+
+        <section class="step-workbench" aria-label="当前发布步骤">
+          <article id="currentStepCard" class="focus-panel">
+            <div class="focus-meta">
+              <span id="currentStepEyebrow" class="eyebrow">当前步骤</span>
+              <span id="currentStepStatus" class="status-pill neutral">未开始</span>
+            </div>
+            <div class="step-title-row">
+              <div id="currentStepNumber" class="step-number">1</div>
+              <div>
+                <h2 id="currentStepTitle">准备发布信息</h2>
+                <p id="currentStepDescription" class="step-description">确认目标版本和 release 目录后开始发布准备。</p>
+              </div>
+            </div>
+            <div id="focusSuggestions" class="focus-suggestions"></div>
+            <div id="confirmSlot" class="confirm-slot" hidden></div>
+            <div class="primary-action-row">
+              <button id="primaryActionButton" class="primary-button" type="button">确认发布信息</button>
+              <button id="detailButton" class="secondary-button" type="button">详情</button>
+            </div>
+          </article>
+
+          <section class="log-panel" aria-label="执行日志">
+            <header>
+              <div>
+                <span class="eyebrow">执行日志</span>
+                <strong id="logTitle">等待执行</strong>
+              </div>
+              <button id="toggleLogsButton" class="ghost-button" type="button">折叠</button>
+            </header>
+            <pre id="actionLogOutput" class="action-log">等待执行。</pre>
+          </section>
+
+          <section id="detailPanel" class="side-sheet" hidden aria-label="当前步骤详情">
+            <header>
+              <div>
+                <span class="eyebrow">详情</span>
+                <strong id="detailsSummaryText">当前步骤详情</strong>
+              </div>
+              <button id="closeDetailButton" class="ghost-button" type="button">关闭</button>
+            </header>
+            <div id="stepDetailContent" class="sheet-content"></div>
+          </section>
+
+          <section id="diagnosticsPanel" class="side-sheet diagnostics-panel" hidden aria-label="高级诊断">
+            <header>
+              <div>
+                <span class="eyebrow">高级</span>
+                <strong>诊断信息</strong>
+              </div>
+              <button id="closeDiagnosticsButton" class="ghost-button" type="button">关闭</button>
+            </header>
+            <div class="diagnostics-tabs" role="tablist" aria-label="高级诊断分类">
+              <button class="diagnostics-tab active" type="button" data-diagnostics-tab="config">配置</button>
+              <button class="diagnostics-tab" type="button" data-diagnostics-tab="manifest">Manifest</button>
+              <button class="diagnostics-tab" type="button" data-diagnostics-tab="artifacts">产物</button>
+              <button class="diagnostics-tab" type="button" data-diagnostics-tab="history">历史</button>
+              <button class="diagnostics-tab" type="button" data-diagnostics-tab="commands">命令</button>
+            </div>
+            <div id="diagnosticsContent" class="sheet-content"></div>
+          </section>
+        </section>
       </section>
     </main>
     <script type="module" src="/app.js"></script>

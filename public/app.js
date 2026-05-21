@@ -1,12 +1,11 @@
 const invoke = window.__TAURI_INTERNALS__?.invoke;
 
-const progressSteps = [
-  { key: 'preflight', label: '预检' },
-  { key: 'artifactCheck', label: '产物' },
-  { key: 'manifest', label: 'Manifest' },
-  { key: 'verify', label: '验证' },
-  { key: 'dryRunRelease', label: 'Dry-run' },
-  { key: 'report', label: '报告' },
+const journeyStages = [
+  { key: 'prepare', label: '准备发版', steps: ['preflight'] },
+  { key: 'build', label: '打包双端', steps: ['buildWindows', 'buildMac'] },
+  { key: 'collect', label: '收集检查', steps: ['collectWindowsArtifacts', 'artifactCheck', 'manifest'] },
+  { key: 'publish', label: '发布分发', steps: ['publishGithub', 'publishGitee'] },
+  { key: 'verify', label: '验证报告', steps: ['verify', 'report'] },
 ];
 
 const elements = {
@@ -17,6 +16,8 @@ const elements = {
   latestDirButton: document.querySelector('#latestDirButton'),
   openDirButton: document.querySelector('#openDirButton'),
   loadButton: document.querySelector('#loadButton'),
+  historyButton: document.querySelector('#historyButton'),
+  diagnosticsButton: document.querySelector('#diagnosticsButton'),
   overallStatusText: document.querySelector('#overallStatusText'),
   overallStatusBadge: document.querySelector('#overallStatusBadge'),
   progressRail: document.querySelector('#progressRail'),
@@ -26,19 +27,19 @@ const elements = {
   currentStepDescription: document.querySelector('#currentStepDescription'),
   currentStepStatus: document.querySelector('#currentStepStatus'),
   primaryActionButton: document.querySelector('#primaryActionButton'),
+  detailButton: document.querySelector('#detailButton'),
   focusSuggestions: document.querySelector('#focusSuggestions'),
-  detailsSummaryText: document.querySelector('#detailsSummaryText'),
-  stepDetailContent: document.querySelector('#stepDetailContent'),
+  confirmSlot: document.querySelector('#confirmSlot'),
+  logTitle: document.querySelector('#logTitle'),
   toggleLogsButton: document.querySelector('#toggleLogsButton'),
   actionLogOutput: document.querySelector('#actionLogOutput'),
-  configSummary: document.querySelector('#configSummary'),
-  manifestList: document.querySelector('#manifestList'),
-  artifactList: document.querySelector('#artifactList'),
-  commandOutput: document.querySelector('#commandOutput'),
-  confirmVersionInput: document.querySelector('#confirmVersionInput'),
-  publishGithubButton: document.querySelector('#publishGithubButton'),
-  publishGiteeButton: document.querySelector('#publishGiteeButton'),
-  historyList: document.querySelector('#historyList'),
+  detailPanel: document.querySelector('#detailPanel'),
+  closeDetailButton: document.querySelector('#closeDetailButton'),
+  detailsSummaryText: document.querySelector('#detailsSummaryText'),
+  stepDetailContent: document.querySelector('#stepDetailContent'),
+  diagnosticsPanel: document.querySelector('#diagnosticsPanel'),
+  closeDiagnosticsButton: document.querySelector('#closeDiagnosticsButton'),
+  diagnosticsContent: document.querySelector('#diagnosticsContent'),
 };
 
 const appState = {
@@ -48,6 +49,10 @@ const appState = {
   history: [],
   lastAction: null,
   loadingAction: '',
+  logPoller: null,
+  detailOpen: false,
+  diagnosticsOpen: false,
+  diagnosticsTab: 'config',
 };
 
 await loadConfig();
@@ -59,23 +64,32 @@ if (elements.refreshButton) elements.refreshButton.addEventListener('click', () 
 if (elements.loadButton) elements.loadButton.addEventListener('click', () => loadSummary(elements.releaseDirInput.value.trim()));
 if (elements.latestDirButton) elements.latestDirButton.addEventListener('click', () => loadLatestReleaseDir());
 if (elements.openDirButton) elements.openDirButton.addEventListener('click', () => openReleaseDir());
-if (!invoke) document.querySelectorAll('.desktop-only').forEach((element) => element.hidden = true);
+if (!invoke) document.querySelectorAll('.desktop-only').forEach((element) => { element.hidden = true; });
 if (elements.primaryActionButton) elements.primaryActionButton.addEventListener('click', () => runPrimaryAction());
-if (elements.publishGithubButton) elements.publishGithubButton.addEventListener('click', () => runAction('publish-github'));
-if (elements.publishGiteeButton) elements.publishGiteeButton.addEventListener('click', () => runAction('publish-gitee'));
+if (elements.detailButton) elements.detailButton.addEventListener('click', () => toggleDetailPanel());
+if (elements.historyButton) elements.historyButton.addEventListener('click', () => openDiagnostics('history'));
+if (elements.diagnosticsButton) elements.diagnosticsButton.addEventListener('click', () => openDiagnostics('config'));
+if (elements.closeDetailButton) elements.closeDetailButton.addEventListener('click', () => closeDetailPanel());
+if (elements.closeDiagnosticsButton) elements.closeDiagnosticsButton.addEventListener('click', () => closeDiagnostics());
 if (elements.versionInput) elements.versionInput.addEventListener('change', () => loadCommands(elements.versionInput.value.trim()));
 if (elements.toggleLogsButton) {
   elements.toggleLogsButton.addEventListener('click', () => {
     elements.actionLogOutput.classList.toggle('hidden');
-    elements.toggleLogsButton.textContent = elements.actionLogOutput.classList.contains('hidden') ? '显示日志' : '隐藏日志';
+    elements.toggleLogsButton.textContent = elements.actionLogOutput.classList.contains('hidden') ? '展开' : '折叠';
   });
 }
-if (elements.commandOutput) {
-  elements.commandOutput.addEventListener('click', async (event) => {
-    const button = event.target.closest('button[data-copy-raw]');
-    if (!button) return;
-    await navigator.clipboard.writeText(decodeURIComponent(button.dataset.copyRaw));
-    button.textContent = '已复制';
+if (elements.diagnosticsPanel) {
+  elements.diagnosticsPanel.addEventListener('click', async (event) => {
+    const tab = event.target.closest('[data-diagnostics-tab]');
+    if (tab) {
+      appState.diagnosticsTab = tab.dataset.diagnosticsTab;
+      renderApp();
+      return;
+    }
+    const copyButton = event.target.closest('button[data-copy-raw]');
+    if (!copyButton) return;
+    await navigator.clipboard.writeText(decodeURIComponent(copyButton.dataset.copyRaw));
+    copyButton.textContent = '已复制';
   });
 }
 if (elements.stepDetailContent) {
@@ -155,96 +169,101 @@ function resolveCurrentStep(state, summary) {
   const steps = state?.steps || {};
   const hasContext = Boolean(elements.versionInput.value.trim() && (elements.releaseDirInput.value.trim() || summary?.releaseDir));
   if (!hasContext) {
-    return { key: 'context', label: '准备发布信息', status: 'not_started', description: '确认目标版本和 release 目录后开始发布准备。', action: '' };
+    return { key: 'context', label: '准备发布信息', status: 'not_started', description: '确认目标版本和 release 目录后开始。', action: '' };
   }
   if (steps.preflight?.status !== 'success') {
-    return {
-      key: 'preflight',
-      label: '先确认发布环境',
-      status: steps.preflight?.status || 'not_started',
-      description: '检查源码版本、凭据、4090 连接和 updater 端点。',
-      action: 'preflight',
-    };
+    return { key: 'preflight', label: '准备发版', status: steps.preflight?.status || 'not_started', description: '检查版本、凭据、4090 连接和 updater 端点。', action: 'preflight' };
+  }
+  if (steps.buildWindows?.status !== 'success') {
+    return { key: 'buildWindows', label: '打包 Windows', status: steps.buildWindows?.status || 'not_started', description: '在 4090 上创建干净 worktree 并打包 Windows 应用。', action: 'build-windows' };
+  }
+  if (steps.buildMac?.status !== 'success') {
+    return { key: 'buildMac', label: '打包 Mac', status: steps.buildMac?.status || 'not_started', description: '在本机从源码仓库打包 Mac 应用。', action: 'build-mac' };
+  }
+  if (steps.collectWindowsArtifacts?.status !== 'success') {
+    return { key: 'collectWindowsArtifacts', label: '收集 Windows 产物', status: steps.collectWindowsArtifacts?.status || 'not_started', description: '从 4090 拉回 Windows 产物和签名。', action: 'collect-windows-artifacts' };
   }
   if (steps.artifactCheck?.status !== 'success') {
-    return {
-      key: 'artifactCheck',
-      label: '确认发布产物',
-      action: 'check-artifacts',
-      status: steps.artifactCheck?.status || 'not_started',
-      description: '检查 Windows 与 Mac 产物及签名。',
-    };
+    return { key: 'artifactCheck', label: '检查产物', action: 'check-artifacts', status: steps.artifactCheck?.status || 'not_started', description: '确认 Windows 与 Mac 产物、签名齐全。' };
   }
   if (steps.manifestGithub?.status !== 'success' || steps.manifestGitee?.status !== 'success') {
-    return {
-      key: 'manifest',
-      label: '生成 Manifest',
-      action: 'manifest',
-      status: firstBlockingStatus([steps.manifestGithub, steps.manifestGitee]),
-      description: '生成 checksums 和 GitHub/Gitee manifest。',
-    };
+    return { key: 'manifest', label: '生成 Manifest', action: 'manifest', status: firstBlockingStatus([steps.manifestGithub, steps.manifestGitee]), description: '生成 checksums 和 GitHub/Gitee manifest。' };
+  }
+  if (steps.publishGithub?.status !== 'success') {
+    return { key: 'publishGithub', label: '发布 GitHub', status: steps.publishGithub?.status || 'not_started', description: '确认版本后创建 GitHub Release 并上传产物。', action: 'publish-github' };
+  }
+  if (steps.publishGitee?.status !== 'success') {
+    return { key: 'publishGitee', label: '发布 Gitee', status: steps.publishGitee?.status || 'not_started', description: '确认版本后创建 Gitee Release 并更新 latest.json。', action: 'publish-gitee' };
   }
   if (steps.verify?.status !== 'success') {
-    return {
-      key: 'verify',
-      label: '验证线上端点',
-      status: steps.verify?.status || 'not_started',
-      description: '确认 updater manifest 与下载 URL 可访问且版本匹配。',
-      action: 'verify',
-    };
-  }
-  if (steps.dryRunRelease?.status !== 'success') {
-    return {
-      key: 'dryRunRelease',
-      label: '生成发布命令',
-      status: steps.dryRunRelease?.status || 'not_started',
-      description: '生成真实发布前的 dry-run 命令，不执行上传。',
-      action: 'dry-run-release',
-    };
+    return { key: 'verify', label: '验证线上更新', status: steps.verify?.status || 'not_started', description: '确认 updater manifest 与下载 URL 可访问。', action: 'verify' };
   }
   if (steps.report?.status !== 'success') {
-    return {
-      key: 'report',
-      label: '生成发布报告',
-      status: steps.report?.status || 'not_started',
-      description: '沉淀本次发布的步骤、状态、产物和 manifest 摘要。',
-      action: 'report',
-    };
+    return { key: 'report', label: '生成发布报告', status: steps.report?.status || 'not_started', description: '生成本次发布的报告摘要。', action: 'report' };
   }
-  return {
-    key: 'complete',
-    label: '发布准备完成',
-    status: 'success',
-    action: 'copyCommands',
-    description: '预检、产物、manifest、验证和 dry-run 已完成。',
-  };
+  return { key: 'complete', label: '发布完成', status: 'success', action: 'copyCommands', description: '打包、发布、验证和报告已完成。' };
 }
 
 function resolvePrimaryAction(currentStep) {
   if (currentStep.key === 'context') return { label: '确认发布信息', action: 'refresh', disabled: false };
   if (currentStep.key === 'complete') return { label: '复制发布命令', action: 'copyCommands', disabled: false };
-  if (!currentStep.action) return { label: 'Phase 2 启用', action: '', disabled: true };
+  if (!currentStep.action) return { label: '等待上下文', action: '', disabled: true };
   const retry = currentStep.status === 'failed' ? '重新' : '';
   const labels = {
-    preflight: `${retry}运行预检`,
+    preflight: `${retry}开始预检`,
+    buildWindows: `${retry}打包 Windows`,
+    buildMac: `${retry}打包 Mac`,
+    collectWindowsArtifacts: `${retry}收集 Windows 产物`,
     artifactCheck: `${retry}检查产物`,
     manifest: `${retry}生成 Manifest`,
-    verify: `${retry}验证端点`,
-    dryRunRelease: `${retry}生成 dry-run`,
+    publishGithub: `${retry}发布 GitHub`,
+    publishGitee: `${retry}发布 Gitee`,
+    verify: `${retry}验证线上更新`,
     report: `${retry}生成报告`,
   };
   return { label: labels[currentStep.key] || currentStep.label, action: currentStep.action, disabled: false };
 }
 
 function mapProgressItems(steps, currentKey) {
-  return progressSteps.map((step) => {
-    if (step.key === 'manifest') {
-      const manifestDone = steps.manifestGithub?.status === 'success' && steps.manifestGitee?.status === 'success';
-      const manifestFailed = steps.manifestGithub?.status === 'failed' || steps.manifestGitee?.status === 'failed';
-      return { ...step, status: manifestDone ? 'success' : manifestFailed ? 'failed' : 'not_started', active: currentKey === step.key || currentKey === 'artifactCheck' };
-    }
-    return { ...step, status: steps[step.key]?.status || 'not_started', active: currentKey === step.key };
+  const activeStage = stageForStep(currentKey);
+  return journeyStages.map((stage, index) => {
+    const statuses = stage.steps.map((step) => statusForStep(steps, step));
+    const done = statuses.filter((status) => status === 'success').length;
+    return {
+      ...stage,
+      index: index + 1,
+      status: stageStatus(statuses),
+      active: stage.key === activeStage,
+      done,
+      total: stage.steps.length,
+    };
   });
+}
+
+function statusForStep(steps, key) {
+  if (key === 'manifest') {
+    const statuses = [steps.manifestGithub?.status, steps.manifestGitee?.status].filter(Boolean);
+    if (statuses.includes('failed')) return 'failed';
+    if (statuses.includes('running')) return 'running';
+    if (statuses.length === 2 && statuses.every((status) => status === 'success')) return 'success';
+    if (statuses.some((status) => status === 'success')) return 'running';
+    return 'not_started';
+  }
+  return steps[key]?.status || 'not_started';
+}
+
+function stageStatus(statuses) {
+  if (statuses.includes('failed')) return 'failed';
+  if (statuses.includes('running')) return 'running';
+  if (statuses.every((status) => status === 'success')) return 'success';
+  if (statuses.some((status) => status === 'success')) return 'running';
+  return 'not_started';
+}
+
+function stageForStep(key) {
+  if (key === 'context') return 'prepare';
+  if (key === 'complete') return 'verify';
+  return journeyStages.find((stage) => stage.steps.includes(key))?.key || 'prepare';
 }
 
 function primarySuggestionFor(currentStep, state, lastAction) {
@@ -252,17 +271,9 @@ function primarySuggestionFor(currentStep, state, lastAction) {
     if (!elements.versionInput.value.trim()) return { severity: 'warning', message: '先填写目标版本。' };
     if (!elements.releaseDirInput.value.trim() && !appState.summary?.releaseDir) return { severity: 'warning', message: '先选择或读取 release 目录。' };
   }
-
-  if (currentStep.key === 'complete') {
-    return { severity: 'info', message: '发布准备、dry-run 和报告已完成；真实发布仍需版本确认。' };
-  }
-
-  if (Object.values(appState.summary?.manifests || {}).some((manifest) => manifest.versionStatus === 'same_version')) {
-    return { severity: 'warning', message: '线上 manifest 已是目标版本，重复发布前请确认。' };
-  }
-
-  if (currentStep.key === 'dryRunRelease') {
-    return { severity: 'info', message: 'dry-run 只生成发布命令，不会执行上传。' };
+  if (currentStep.key === 'complete') return { severity: 'info', message: '发版流程已走完。' };
+  if (currentStep.key === 'publishGithub' || currentStep.key === 'publishGitee') {
+    return { severity: 'warning', message: '发布前必须输入与目标一致的版本号确认。' };
   }
 
   const suggestions = [...(lastAction?.suggestions || []), ...(state.suggestions || [])];
@@ -292,9 +303,9 @@ function renderApp() {
   renderHeader(viewModel);
   renderProgressRail(viewModel.progressItems);
   renderCurrentStep(viewModel);
-  renderStepDetails(viewModel);
-  renderSecondaryDetails(viewModel);
-  renderHistory();
+  renderConfirmSlot(viewModel.currentStep);
+  renderDetailPanel(viewModel);
+  renderDiagnosticsPanel(viewModel);
 }
 
 function renderHeader(viewModel) {
@@ -306,9 +317,12 @@ function renderHeader(viewModel) {
 
 function renderProgressRail(items) {
   elements.progressRail.innerHTML = items.map((item) => `
-    <div class="progress-item ${item.active ? 'active' : ''}">
-      <span class="progress-segment ${toneForStatus(item.status)}"></span>
-      <span>${item.label}</span>
+    <div class="journey-item ${item.active ? 'active' : ''} ${item.status}">
+      <div class="journey-index">${item.status === 'success' ? '✓' : item.index}</div>
+      <div class="journey-copy">
+        <strong>${escapeHtml(String(item.label))}</strong>
+        <span>${statusLabel(item.status)} · ${item.done}/${item.total}</span>
+      </div>
     </div>
   `).join('');
 }
@@ -317,7 +331,7 @@ function renderCurrentStep(viewModel) {
   const { currentStep, primaryAction, primarySuggestion, progressItems } = viewModel;
   const activeIndex = Math.max(0, progressItems.findIndex((item) => item.active));
   elements.currentStepNumber.textContent = currentStep.key === 'complete' ? '✓' : String(activeIndex + 1);
-  elements.currentStepEyebrow.textContent = currentStep.key === 'complete' ? '准备完成' : '当前步骤';
+  elements.currentStepEyebrow.textContent = currentStep.key === 'complete' ? '发布完成' : progressItems[activeIndex]?.label || '当前步骤';
   elements.currentStepTitle.textContent = currentStep.label;
   elements.currentStepDescription.textContent = currentStep.description;
   elements.currentStepStatus.textContent = statusLabel(currentStep.status);
@@ -328,95 +342,176 @@ function renderCurrentStep(viewModel) {
   elements.focusSuggestions.innerHTML = `
     <article class="focus-suggestion ${toneForSuggestion(primarySuggestion.severity)}">
       <strong>${suggestionLabel(primarySuggestion.severity)}</strong>
-      <span>${primarySuggestion.message}</span>
+      <span>${escapeHtml(String(primarySuggestion.message))}</span>
     </article>
   `;
-  elements.detailsSummaryText.textContent = detailsSummaryFor(currentStep);
+  elements.logTitle.textContent = appState.loadingAction ? `正在执行 ${appState.loadingAction}` : '等待执行';
+}
+
+function renderConfirmSlot(currentStep) {
+  const needsConfirm = currentStep.key === 'publishGithub' || currentStep.key === 'publishGitee';
+  elements.confirmSlot.hidden = !needsConfirm;
+  elements.confirmSlot.innerHTML = needsConfirm
+    ? `
+      <label for="confirmVersionInput">
+        <span>版本确认</span>
+        <input id="confirmVersionInput" placeholder="输入 ${escapeHtml(elements.versionInput.value.trim() || '目标版本')} 后发布" />
+      </label>
+    `
+    : '';
+}
+
+function renderDetailPanel(viewModel) {
+  elements.detailPanel.hidden = !appState.detailOpen;
+  elements.detailsSummaryText.textContent = detailsSummaryFor(viewModel.currentStep);
+  if (!appState.detailOpen) return;
+  renderStepDetails(viewModel);
+}
+
+function renderDiagnosticsPanel(viewModel) {
+  elements.diagnosticsPanel.hidden = !appState.diagnosticsOpen;
+  if (!appState.diagnosticsOpen) return;
+  document.querySelectorAll('.diagnostics-tab').forEach((tab) => {
+    tab.classList.toggle('active', tab.dataset.diagnosticsTab === appState.diagnosticsTab);
+  });
+  const renderers = {
+    config: () => renderConfig(viewModel.config || {}),
+    manifest: () => renderManifestSummary(viewModel.summary?.manifests || {}),
+    artifacts: () => renderFullArtifacts(viewModel.summary?.requiredArtifacts || [], viewModel.summary?.artifacts || []),
+    history: () => renderHistory(),
+    commands: () => renderCommands(appState.commands || []),
+  };
+  elements.diagnosticsContent.innerHTML = renderers[appState.diagnosticsTab]?.() || '<p class="empty-state">暂无信息</p>';
 }
 
 function renderStepDetails(viewModel) {
   const state = viewModel.summary?.state || {};
   const currentKey = viewModel.currentStep.key;
   if (currentKey === 'preflight') {
-    renderChecks(state.checks || []);
+    elements.stepDetailContent.innerHTML = checksHtml(state.checks || []);
     return;
   }
   if (currentKey === 'artifactCheck' || currentKey === 'manifest') {
-    renderArtifacts(viewModel.summary?.requiredArtifacts || [], viewModel.summary?.artifacts || []);
+    elements.stepDetailContent.innerHTML = artifactsHtml(viewModel.summary?.requiredArtifacts || [], viewModel.summary?.artifacts || []);
+    return;
+  }
+  if (currentKey === 'buildWindows' || currentKey === 'collectWindowsArtifacts' || currentKey === 'buildMac') {
+    elements.stepDetailContent.innerHTML = buildSummaryHtml(state.steps?.[currentKey]);
+    return;
+  }
+  if (currentKey === 'publishGithub' || currentKey === 'publishGitee') {
+    elements.stepDetailContent.innerHTML = publishSummaryHtml(state.steps?.[currentKey]);
     return;
   }
   if (currentKey === 'verify') {
-    renderVerifyResults(state.manifests?.onlineVerify?.results || []);
+    elements.stepDetailContent.innerHTML = verifyResultsHtml(state.manifests?.onlineVerify?.results || []);
     return;
   }
-  if (currentKey === 'dryRunRelease' || currentKey === 'complete') {
-    renderCommands(appState.commands || []);
+  if (currentKey === 'report') {
+    elements.stepDetailContent.innerHTML = reportHtml(state.steps?.report);
     return;
   }
-  elements.stepDetailContent.innerHTML = `<p class="empty-state">填写发布信息后开始。</p>`;
+  elements.stepDetailContent.innerHTML = '<p class="empty-state">当前步骤暂无详情。</p>';
 }
 
 function detailsSummaryFor(currentStep) {
   return {
-    context: '发布信息与配置',
-    preflight: '预检结果与建议',
-    artifactCheck: '产物与 Manifest 详情',
-    verify: '端点验证结果',
-    dryRunRelease: '发布命令',
-    complete: '准备完成详情',
+    context: '发布信息',
+    preflight: '预检结果',
+    artifactCheck: '产物检查',
+    manifest: 'Manifest 详情',
+    buildWindows: 'Windows 打包',
+    collectWindowsArtifacts: '产物收集',
+    buildMac: 'Mac 打包',
+    publishGithub: 'GitHub 发布',
+    publishGitee: 'Gitee 发布',
+    verify: '验证结果',
+    report: '发布报告',
+    complete: '完成摘要',
   }[currentStep.key] || '当前步骤详情';
 }
 
-function renderChecks(checks) {
-  elements.stepDetailContent.innerHTML = checks.length ? checks.map((check) => `
+function checksHtml(checks) {
+  return checks.length ? checks.map((check) => `
     <article class="detail-row">
       <span class="status-dot ${toneForStatus(check.status)}"></span>
       <div>
-        <strong>${check.label}</strong>
-        <p>${check.message}</p>
+        <strong>${escapeHtml(String(check.label || '-'))}</strong>
+        <p>${escapeHtml(String(check.message || '-'))}</p>
       </div>
     </article>
-  `).join('') : `<p class="empty-state">还没有检查结果。</p>`;
+  `).join('') : '<p class="empty-state">还没有检查结果。</p>';
 }
 
-function renderArtifacts(requiredArtifacts, actualArtifacts) {
+function publishSummaryHtml(step) {
+  const summary = step?.summary || {};
+  const assets = summary.assets || [];
+  return assets.length ? assets.map((asset) => {
+    const label = typeof asset === 'string' ? asset : asset.name || asset.id || '-';
+    const detail = typeof asset === 'string' ? summary.repo || '' : `id: ${asset.id || '-'} size: ${asset.size || '-'}`;
+    return `
+      <article class="detail-row">
+        <span class="status-dot success"></span>
+        <div>
+          <strong>${escapeHtml(String(label))}</strong>
+          <p>${escapeHtml(String(detail))}</p>
+        </div>
+      </article>
+    `;
+  }).join('') : '<p class="empty-state">输入确认版本后执行发布。</p>';
+}
+
+function buildSummaryHtml(step) {
+  const summary = step?.summary || {};
+  const files = summary.files || [];
+  if (files.length) {
+    return files.map((file) => `
+      <article class="detail-row">
+        <span class="status-dot success"></span>
+        <div>
+          <strong>${escapeHtml(file.target || '-')}</strong>
+          <p>${escapeHtml(file.source || '-')}</p>
+        </div>
+      </article>
+    `).join('');
+  }
+  return '<p class="empty-state">还没有打包或收集结果。</p>';
+}
+
+function artifactsHtml(requiredArtifacts, actualArtifacts) {
   const requiredKeys = new Set(requiredArtifacts.map((artifact) => `${artifact.scope}/${artifact.name}`));
   const rows = requiredArtifacts.length
     ? [...requiredArtifacts, ...actualArtifacts.filter((artifact) => !requiredKeys.has(`${artifact.scope}/${artifact.name}`))]
     : actualArtifacts;
   rows.sort((a, b) => Number(b.exists === false) - Number(a.exists === false));
-  elements.stepDetailContent.innerHTML = rows.length ? rows.map((artifact) => `
+  return rows.length ? rows.map((artifact) => `
     <article class="detail-row">
       <span class="status-dot ${artifact.exists === false ? 'danger' : 'success'}"></span>
       <div>
-        <strong>${artifact.name}</strong>
-        <p>${artifact.scope}${artifact.signatureFor ? ` · 签名：${artifact.signatureFor}` : ''} · ${artifact.exists === false ? '缺失' : formatSize(artifact.size)}</p>
+        <strong>${escapeHtml(String(artifact.name || '-'))}</strong>
+        <p>${escapeHtml(`${artifact.scope || '-'}${artifact.signatureFor ? ` · 签名：${artifact.signatureFor}` : ''} · ${artifact.exists === false ? '缺失' : formatSize(artifact.size)}`)}</p>
       </div>
     </article>
-  `).join('') : `<p class="empty-state">还没有产物信息。</p>`;
+  `).join('') : '<p class="empty-state">还没有产物信息。</p>';
 }
 
-function renderVerifyResults(results) {
-  elements.stepDetailContent.innerHTML = results.length ? results.map((result) => `
+function verifyResultsHtml(results) {
+  return results.length ? results.map((result) => `
     <article class="detail-row">
       <span class="status-dot ${toneForStatus(result.status)}"></span>
       <div>
-        <strong>${result.endpoint}</strong>
-        <p>${result.status === 'success' ? `版本 ${result.version} · ${result.platforms.length} 个平台` : result.error}</p>
+        <strong>${escapeHtml(String(result.endpoint || '-'))}</strong>
+        <p>${escapeHtml(result.status === 'success' ? `版本 ${result.version} · ${result.platforms.length} 个平台` : String(result.error || '-'))}</p>
       </div>
     </article>
-  `).join('') : `<p class="empty-state">还没有线上验证结果。</p>`;
+  `).join('') : '<p class="empty-state">还没有线上验证结果。</p>';
 }
 
-function renderCommands(commands) {
-  elements.stepDetailContent.innerHTML = commands.length ? commands.map((command) => commandCard(command)).join('') : `<p class="empty-state">还没有命令。运行 dry-run 后查看命令。</p>`;
-}
-
-function renderSecondaryDetails(viewModel) {
-  renderConfig(viewModel.config || {});
-  renderManifestSummary(viewModel.summary?.manifests || {});
-  renderFullArtifacts(viewModel.summary?.requiredArtifacts || [], viewModel.summary?.artifacts || []);
-  elements.commandOutput.innerHTML = (appState.commands || []).map((command) => commandCard(command)).join('') || `<p class="empty-state">暂无命令</p>`;
+function reportHtml(step) {
+  const file = step?.summary?.file;
+  return file
+    ? `<article class="detail-row"><span class="status-dot success"></span><div><strong>发布报告</strong><p>${escapeHtml(file)}</p></div></article>`
+    : '<p class="empty-state">还没有发布报告。</p>';
 }
 
 function renderConfig(config) {
@@ -427,36 +522,59 @@ function renderConfig(config) {
     ['Windows SSH', config.windowsSsh],
     ['Proxy', config.githubProxy],
   ];
-  elements.configSummary.innerHTML = rows.map(([label, value]) => `<article class="compact-row"><span>${label}</span><strong>${value || '-'}</strong></article>`).join('');
+  return rows.map(([label, value]) => `<article class="compact-row"><span>${escapeHtml(label)}</span><strong>${escapeHtml(String(value || '-'))}</strong></article>`).join('');
 }
 
 function renderManifestSummary(manifests) {
   const baseRows = ['github', 'gitee'].map((host) => {
     const manifest = manifests[host] || {};
     const status = manifest.versionStatus === 'same_version' ? ' · 已是目标版本' : '';
-    return `<article class="compact-row"><span>${hostLabel(host)}</span><strong>${manifest.exists ? `${manifest.version}${status}` : '缺失'}</strong></article>`;
+    return `<article class="compact-row"><span>${hostLabel(host)}</span><strong>${escapeHtml(manifest.exists ? `${manifest.version}${status}` : '缺失')}</strong></article>`;
   });
   const diff = appState.summary?.manifestDiff || {};
   const warnings = [
     ...(diff.missingOnGithub || []).map((item) => `GitHub 缺 ${item}`),
     ...(diff.missingOnGitee || []).map((item) => `Gitee 缺 ${item}`),
   ];
-  elements.manifestList.innerHTML = [
-    ...baseRows,
-    ...warnings.map((warning) => `<article class="compact-row"><span>差异</span><strong>${escapeHtml(warning)}</strong></article>`),
-  ].join('');
+  return [...baseRows, ...warnings.map((warning) => `<article class="compact-row"><span>差异</span><strong>${escapeHtml(warning)}</strong></article>`)].join('');
 }
 
 function renderHistory() {
-  if (!elements.historyList) return;
-  elements.historyList.innerHTML = appState.history.length
+  return appState.history.length
     ? appState.history.map((run) => `<article class="compact-row"><span>${escapeHtml(run.version || '-')}</span><strong>${escapeHtml(run.overallStatus || '-')}</strong></article>`).join('')
-    : `<p class="empty-state">暂无发布历史</p>`;
+    : '<p class="empty-state">暂无发布历史</p>';
 }
 
 function renderFullArtifacts(requiredArtifacts, actualArtifacts) {
   const rows = requiredArtifacts.length ? requiredArtifacts : actualArtifacts;
-  elements.artifactList.innerHTML = rows.map((artifact) => `<article class="compact-row"><span>${artifact.scope}</span><strong>${artifact.name}</strong></article>`).join('') || `<p class="empty-state">暂无产物</p>`;
+  return rows.map((artifact) => `<article class="compact-row"><span>${escapeHtml(String(artifact.scope || '-'))}</span><strong>${escapeHtml(String(artifact.name || '-'))}</strong></article>`).join('') || '<p class="empty-state">暂无产物</p>';
+}
+
+function renderCommands(commands) {
+  return commands.length ? commands.map((command) => commandCard(command)).join('') : '<p class="empty-state">暂无命令</p>';
+}
+
+function toggleDetailPanel() {
+  appState.detailOpen = !appState.detailOpen;
+  if (appState.detailOpen) appState.diagnosticsOpen = false;
+  renderApp();
+}
+
+function closeDetailPanel() {
+  appState.detailOpen = false;
+  renderApp();
+}
+
+function openDiagnostics(tab) {
+  appState.diagnosticsOpen = true;
+  appState.detailOpen = false;
+  appState.diagnosticsTab = tab;
+  renderApp();
+}
+
+function closeDiagnostics() {
+  appState.diagnosticsOpen = false;
+  renderApp();
 }
 
 async function runPrimaryAction() {
@@ -476,13 +594,19 @@ async function runPrimaryAction() {
 }
 
 async function runAction(action) {
+  let version = '';
+  let releaseDir = '';
   try {
-    const version = elements.versionInput.value.trim();
-    const releaseDir = elements.releaseDirInput.value.trim();
+    version = elements.versionInput.value.trim();
+    releaseDir = elements.releaseDirInput.value.trim();
+    const confirmVersion = document.querySelector('#confirmVersionInput')?.value.trim() || '';
     appState.loadingAction = action;
+    elements.actionLogOutput.classList.remove('hidden');
+    elements.toggleLogsButton.textContent = '折叠';
+    elements.actionLogOutput.textContent = `开始执行 ${action}...\n`;
     renderApp();
+    startActionLogPolling(action, version, releaseDir);
 
-    const confirmVersion = elements.confirmVersionInput?.value.trim() || '';
     const data = invoke
       ? await invoke('tauri_action', { action, version, releaseDir, confirmVersion })
       : await fetchAction(`/api/actions/${action}`, {
@@ -492,7 +616,10 @@ async function runAction(action) {
       });
 
     appState.lastAction = data;
-    elements.actionLogOutput.textContent = [data.logs?.stdout, data.logs?.stderr].filter(Boolean).join('\n') || data.message;
+    await loadActionLog(action, version, releaseDir);
+    if (!elements.actionLogOutput.textContent.trim()) {
+      elements.actionLogOutput.textContent = [data.logs?.stdout, data.logs?.stderr].filter(Boolean).join('\n') || data.message;
+    }
     await loadSummary(releaseDir);
     await loadHistory();
   } catch (error) {
@@ -500,8 +627,35 @@ async function runAction(action) {
     elements.actionLogOutput.textContent = error.message;
     renderApp();
   } finally {
+    stopActionLogPolling();
+    if (action && version && releaseDir) await loadActionLog(action, version, releaseDir).catch(() => {});
     appState.loadingAction = '';
     renderApp();
+  }
+}
+
+function startActionLogPolling(action, version, releaseDir) {
+  stopActionLogPolling();
+  appState.logPoller = window.setInterval(() => {
+    loadActionLog(action, version, releaseDir).catch(() => {});
+  }, 1000);
+}
+
+function stopActionLogPolling() {
+  if (appState.logPoller) {
+    window.clearInterval(appState.logPoller);
+    appState.logPoller = null;
+  }
+}
+
+async function loadActionLog(action, version, releaseDir) {
+  if (!version || !releaseDir) return;
+  const data = invoke
+    ? await invoke('tauri_action_log', { action, version, releaseDir })
+    : await fetchJson(`/api/action-log?action=${encodeURIComponent(action)}&version=${encodeURIComponent(version)}&releaseDir=${encodeURIComponent(releaseDir)}`);
+  if (data.log) {
+    elements.actionLogOutput.textContent = data.log;
+    elements.actionLogOutput.scrollTop = elements.actionLogOutput.scrollHeight;
   }
 }
 
@@ -578,7 +732,7 @@ function formatSize(bytes) {
 }
 
 function escapeHtml(value) {
-  return value.replace(/[&<>"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[char]));
+  return String(value).replace(/[&<>"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[char]));
 }
 
 async function fetchAction(url, options) {

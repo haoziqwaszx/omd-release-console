@@ -8,6 +8,10 @@
   "windowsSsh": "4090@192.168.101.9",
   "windowsRepo": "C:\\Users\\4090\\Desktop\\dix-extension-ui",
   "windowsTarget": "x86_64-pc-windows-msvc",
+  "windowsBuildScript": "C:\\Users\\4090\\Desktop\\omd-release-build.ps1",
+  "windowsBuildDir": "C:\\Users\\4090\\Desktop\\dix-extension-ui-release-build",
+  "windowsExportDirPattern": "C:\\Users\\4090\\AppData\\Local\\Temp\\omd-release-export-{version}",
+  "windowsBranch": "codex/tauri-rust-migration",
   "githubProxy": "http://127.0.0.1:7890",
   "releaseDirPattern": "~/Desktop/omd-*-release-*",
   "requiredArtifacts": [
@@ -15,25 +19,33 @@
       "key": "windows-x86_64-nsis",
       "scope": "windows",
       "file": "OMD_{version}_x64-setup.exe",
-      "signature": "OMD_{version}_x64-setup.exe.sig"
+      "signature": "OMD_{version}_x64-setup.exe.sig",
+      "sourceFile": "src-tauri/target/{windowsTarget}/release/bundle/nsis/OMD_{version}_x64-setup.exe",
+      "sourceSignature": "src-tauri/target/{windowsTarget}/release/bundle/nsis/OMD_{version}_x64-setup.exe.sig"
     },
     {
       "key": "windows-x86_64-msi",
       "scope": "windows",
       "file": "OMD_{version}_x64_en-US.msi",
-      "signature": "OMD_{version}_x64_en-US.msi.sig"
+      "signature": "OMD_{version}_x64_en-US.msi.sig",
+      "sourceFile": "src-tauri/target/{windowsTarget}/release/bundle/msi/OMD_{version}_x64_en-US.msi",
+      "sourceSignature": "src-tauri/target/{windowsTarget}/release/bundle/msi/OMD_{version}_x64_en-US.msi.sig"
     },
     {
       "key": "windows-x86_64-green",
       "scope": "windows",
       "file": "OMD_{version}_x64_green.zip",
-      "signature": "OMD_{version}_x64_green.zip.sig"
+      "signature": "OMD_{version}_x64_green.zip.sig",
+      "sourceFile": "src-tauri/target/{windowsTarget}/release/bundle/green/OMD_{version}_x64_green.zip",
+      "sourceSignature": "src-tauri/target/{windowsTarget}/release/bundle/green/OMD_{version}_x64_green.zip.sig"
     },
     {
       "key": "darwin-aarch64",
       "scope": "mac",
       "file": "OMD.app.tar.gz",
-      "signature": "OMD.app.tar.gz.sig"
+      "signature": "OMD.app.tar.gz.sig",
+      "sourceFile": "src-tauri/target/release/bundle/macos/OMD.app.tar.gz",
+      "sourceSignature": "src-tauri/target/release/bundle/macos/OMD.app.tar.gz.sig"
     }
   ]
 }
