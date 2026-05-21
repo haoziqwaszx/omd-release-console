@@ -1,3 +1,6 @@
 target/
 gen/
 release-history.json
+.playwright-cli/
+.sisyphus/
+output/
